@@ -1,0 +1,13 @@
+# Rojo 빌드 산출물
+*.rbxl
+*.rbxlx
+*.rbxl.lock
+*.rbxlx.lock
+
+# 툴체인
+.rokit/
+.aftman/
+
+# 에디터
+.vscode/
+.DS_Store
