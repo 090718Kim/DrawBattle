@@ -13,7 +13,10 @@
 ]]
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
+
+local Config = require(ReplicatedStorage.Shared.Config)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -44,7 +47,11 @@ local DrawBattleUI = require(uiFolder:WaitForChild("DrawBattleUI"))
 
 local ui = DrawBattleUI.new(playerGui)
 
-print("[DrawBattle] canvas ready (render mode =", ui.canvas.mode, ")")
+-- 빌드 표식을 **클라이언트에서도** 찍는다. (README §5.5 의 빌드 표식 이야기)
+-- 서버만 찍으면 "서버는 새 코드인데 화면은 옛 코드" 인 경우를 못 가린다.
+-- 화면 쪽 기능이 안 될 때 코드가 틀린 건지, 옛 코드가 돌고 있는 건지부터 갈라야 한다.
+-- 테스트 창(플레이어)마다 Output 이 따로 있으므로 각 창에서 확인한다.
+print(string.format("[DrawBattle] client build=%s | canvas ready (render mode = %s)", Config.BUILD_TAG, tostring(ui.canvas.mode)))
 
 -- 라운드가 생기면(2단계) 여기서 그리기를 잠그고 풀게 된다.
 --   ui.canvas:SetEnabled(false)

@@ -154,8 +154,17 @@ function UIHelper.setSelected(button: GuiObject, selected: boolean)
 	end
 end
 
--- 잠긴 버튼(아직 못 만든 기능)을 흐리게 만든다.
+-- 버튼을 흐리게 만든다.
+--
+-- ⚠️ **모양만 바꾼다. 클릭은 막지 않는다.** 흐려진 버튼도 누르면 Activated 가 그대로 온다.
+--    "다음 판 그리기" 를 이미 산 뒤 버튼이 흐려졌는데, 누르니 결제창이 또 떴다.
+--    이 함수가 막아줄 거라고 믿고 확인을 안 넣은 게 원인이었다.
+--
+--    그래서 흐린 상태를 "Disabled" 특성으로 같이 남긴다.
+--    **눌렀을 때 하는 일이 중요한 버튼(돈이 걸린 버튼)은 Activated 안에서 직접 확인할 것.**
+--    모양은 알려주는 것일 뿐, 막는 것은 코드다.
 function UIHelper.setDisabled(button: GuiObject, disabled: boolean)
+	button:SetAttribute("Disabled", disabled)
 	local target = if disabled then UI.DISABLED_TRANSPARENCY else UI.PANEL_TRANSPARENCY
 	button.BackgroundTransparency = target
 	local icon = button:FindFirstChild("Icon")

@@ -194,7 +194,8 @@ end
 -- 사람마다 다른 값이라 한 덩어리로 묶어서 같이 보낸다.
 --   progress 차례 진행도 (0~1). 막대와 숫자 둘 다 이 값을 쓴다.
 --   optedOut 안 그리기를 선언했는가
---   booked   "다음 라운드에 내가 그리기" 를 사둔 사람인가
+--   booked   "다음 라운드에 내가 그리기" 자리 주인으로 세는가 (품절 계산용, 최대 DRAW_NEXT_SEATS 명)
+--   hasDrawNext 예약을 들고 있는가 (게이지 100%, Sit out 잠금)
 --   peeking  이번 라운드에 엿보기를 쓰고 있는가
 --
 -- 모두에게 같은 내용을 보내는 FireAllClients 하나로 끝내려고 전원 몫을 다 싣는다.
@@ -204,27 +205,46 @@ end
 --    확률은 몇 명이 다투느냐에 따라 달라져서, 아무것도 안 했는데
 --    누가 들어왔다는 이유로 숫자가 떨어진다. 진행도는 인원과 상관없다.
 local function drawInfo()
-	-- 자리를 사둔 사람은 무조건 그린다. 진행도와 상관없이 꽉 찬 것으로 보여준다.
+	-- 상점의 "품절" 을 정할 자리 주인. **DRAW_NEXT_SEATS 명까지만** 찍는다.
+	-- 뽑는 쪽(startRound)이 그만큼만 받기 때문이다. 같은 규칙은 같은 숫자를 봐야 한다.
 	--
-	-- 예약자는 pickPool 이 아니라 drawCandidates 에서 찾는다.
-	-- 뽑는 쪽과 같은 규칙이어야 한다. 산 사람은 방금 그렸어도 다음 판에 그린다.
-	local booked: Player? = nil
-	for _, player in drawCandidates() do
-		if PlayerStats.HasDrawNext(player) then
-			booked = player
+	-- 예약자는 쉴 수 없으니(SET_OPT_OUT) 전원을 훑어도 후보를 훑는 것과 같다.
+	-- 예약이 정원보다 많으면(다른 서버에서 사 온 사람) 누가 그릴지는 startRound 가 무작위로 정한다.
+	-- 여기 찍히는 두 명은 "품절인가" 를 세는 용도일 뿐, 그 두 명이 그린다는 뜻이 아니다.
+	local booked: { [Player]: boolean } = {}
+	local count = 0
+	for _, player in Players:GetPlayers() do
+		if count >= Config.DRAW_NEXT_SEATS then
 			break
+		end
+		if PlayerStats.HasDrawNext(player) then
+			booked[player] = true
+			count += 1
 		end
 	end
 
 	local info = {}
 	for _, player in Players:GetPlayers() do
+		local hasDrawNext = PlayerStats.HasDrawNext(player)
 		info[tostring(player.UserId)] = {
-			-- 안 그리기를 선언한 사람에게도 그대로 보여준다.
+			-- 예약이 있으면 게이지는 **무조건 100%** 다. (확정 2026-10-27)
+			-- 나갔다 들어와도 그대로다. 예약은 DataStore 에 남기 때문이다.
+			-- 실제로 그리고 나면 예약이 차감되어 원래 진행도(방금 그렸으니 0%)로 돌아간다.
+			--
+			-- 위의 booked 가 아니라 HasDrawNext 를 직접 본다. 정원을 넘친 사람도
+			-- 예약은 들고 있으므로 똑같이 100% 다. 그 셋 중 누가 그릴지는 무작위다.
+			--
+			-- 예약이 없으면 평소 진행도다. 안 그리기를 선언한 사람에게도 그대로 보여준다.
 			-- 쉬는 동안에도 가중치는 오르므로 이 값도 계속 오른다.
 			-- 0 으로 만들면 그동안 쌓인 것이 사라진 것처럼 보인다.
-			progress = if player == booked then 1 else picker:ProgressFor(player.UserId),
+			progress = if hasDrawNext then 1 else picker:ProgressFor(player.UserId),
 			optedOut = state.optedOut[player.UserId] == true,
-			booked = player == booked,
+			booked = booked[player] == true,
+			-- 예약을 들고 있는가. 화면은 이걸 보고 Sit out 버튼을 잠근다.
+			-- 클라이언트도 DrawNextBooked 특성으로 알 수 있지만, 게이지 100% 와 **같은 소식에**
+			-- 실어 보내야 "게이지는 100% 인데 버튼은 안 잠긴" 순간이 안 생긴다.
+			-- 특성과 이벤트는 따로 도착해서 순서가 보장되지 않는다.
+			hasDrawNext = hasDrawNext,
 			peeking = state.peeking[player.UserId] == true,
 		}
 	end
@@ -462,6 +482,42 @@ for _, player in Players:GetPlayers() do
 end
 Players.PlayerAdded:Connect(watchPeek)
 
+-- "다음 라운드에 내가 그리기" 예약이 생기거나 쓰이면 **바로 전원에게 다시 알린다.**
+--
+-- 예약은 게이지(100%)와 상점의 "품절" 을 바꾼다. 둘 다 drawInfo 로 간다.
+-- 그런데 drawInfo 는 broadcast 할 때만 나간다. 구매는 라운드 단계와 상관없이
+-- 아무 때나 일어나므로, 여기서 안 보내면 **다음 단계가 바뀔 때까지** 옛 화면이 남는다.
+--
+-- ⚠️ 실제로 그랬다. 두 번째로 산 사람의 게이지가 100% 로 안 찼다. (2026-10-27 테스트)
+--    서버는 제대로 예약을 받아서 다음 판에 그 사람을 앉혔다. **화면만 옛날 것이었다.**
+--    예전 함수는 "Sit out 중일 때만" 보냈다. 첫 번째 사람이 멀쩡해 보였던 것은
+--    그 사람이 그때 Sit out 중이었거나, 마침 다른 일로 broadcast 가 나갔기 때문으로 보인다.
+--    **가끔 맞는 버그가 제일 늦게 잡힌다.**
+--
+-- 그리고 **쉬는 중에 샀으면 쉬기를 푼다.** (2026-10-27)
+-- 예약이 있는 동안은 쉬기가 금지라서(SET_OPT_OUT), 둘이 겹친 채로 두면 규칙이 깨진다.
+-- 산 것 자체가 "그리겠다" 는 뜻이므로 그 뜻을 따른다.
+-- (구매 버튼을 쉬는 동안 막는 방법도 있었지만, 로벅스 결제는 서버가 중간에 못 끊는다.
+--  화면에서 막아도 결제가 되어버리는 틈이 있으니 서버에서 정리하는 쪽이 확실하다)
+--
+-- PurchaseService 가 broadcast 를 직접 부르지 않는 이유:
+--   구매 모듈이 라운드 모듈을 알게 되면 둘이 서로 얽힌다.
+--   PlayerStats 는 특성(DrawNextBooked)만 바꾸고, 그걸 보고 싶은 쪽이 알아서 본다.
+--   나중에 예약을 넣는 길이 또 생겨도(보상, 운영자 지급 등) 여기 하나로 다 잡힌다.
+local function watchBooking(player: Player)
+	player:GetAttributeChangedSignal("DrawNextBooked"):Connect(function()
+		if PlayerStats.HasDrawNext(player) then
+			state.optedOut[player.UserId] = nil
+		end
+		broadcast()
+	end)
+end
+
+for _, player in Players:GetPlayers() do
+	watchBooking(player)
+end
+Players.PlayerAdded:Connect(watchBooking)
+
 -- 유저가 친 글자를 로블록스 필터에 통과시킨다.
 --
 -- ⚠️ **선택이 아니라 정책 의무다.** (§3.1)
@@ -624,6 +680,17 @@ setOptOut.OnServerEvent:Connect(function(player: Player, wantsOut: any)
 		return
 	end
 
+	-- "다음 판 그리기" 를 사둔 사람은 쉬러 갈 수 없다. (확정 2026-10-27 개발자 결정)
+	-- 돈을 내고 "그리겠다" 고 한 사람이다. 예약과 쉬기가 겹치면
+	-- 예약은 안 쓰인 채 남고, 그 사이 남들은 품절이라 못 사는 이상한 상태가 생긴다.
+	-- 화면 버튼도 잠기지만 그건 편의일 뿐이고, 진짜 잠금은 여기다. (§3.4)
+	--
+	-- 돌아오는 쪽(wantsOut == false)은 막지 않는다. 어떤 이유로든 둘이 겹치면
+	-- 돌아올 길까지 막혀서 갇힌다.
+	if wantsOut and PlayerStats.HasDrawNext(player) then
+		return
+	end
+
 	if state.optedOut[player.UserId] == wantsOut then
 		return -- 바뀐 게 없다. 괜히 다시 뿌리지 않는다.
 	end
@@ -774,26 +841,45 @@ local function startRound()
 		))
 	end
 
-	-- "다음 라운드에 내가 그리기" 를 사둔 사람에게 한 자리를 먼저 준다.
+	-- "다음 라운드에 내가 그리기" 를 사둔 사람에게 자리를 먼저 준다.
 	--
-	-- ⚠️ **한 명까지만.** (§3.2) 두 자리를 다 살 수 있으면 무료 유저는 영영 못 그린다.
-	--    두 사람이 사뒀으면 한 명만 이번에 쓰고, 나머지는 예약이 남아 다음 판에 쓴다.
+	-- **DRAW_NEXT_SEATS 명까지.** (§3.2) 지금은 2명이라 두 자리를 다 살 수 있다.
+	--    정해진 수보다 많이 사뒀으면 넘친 사람은 예약이 남아 그다음 판에 쓴다.
 	--    (쓸 때 차감하므로 그냥 남아 있다)
 	--
 	-- ⚠️ 예약자는 pickPool 이 아니라 drawCandidates 에서 찾는다.
 	--    pickPool 은 "직전에 그린 사람" 을 빼는데, 그러면 그리는 도중에 산 사람이
 	--    **자기가 방금 그렸다는 이유로 한 판 밀린다.** "다음 라운드" 라고 하고 팔았으니
 	--    그건 약속을 어긴 것이다. 돈을 낸 쪽이 이겨야 한다.
+	local bookers: { Player } = {}
+	for _, player in drawCandidates() do
+		if PlayerStats.HasDrawNext(player) then
+			table.insert(bookers, player)
+		end
+	end
+
+	-- 예약이 정원보다 많으면 **그 안에서 무작위로** 고른다. (확정 2026-10-27 개발자 결정)
+	--
+	-- 한 서버 안에서는 품절 때문에 정원을 못 넘지만, 예약은 DataStore 에 남아서
+	-- **다른 서버에서 산 사람이 들고 들어올 수 있다.** 그러면 100% 가 셋이 된다.
+	--
+	-- 예전에는 들어온 순서(GetPlayers 순서)로 잘랐다. 그러면 **늘 먼저 온 사람이 이긴다.**
+	-- 화면에는 셋 다 똑같이 100% 로 보이니, 같은 확률로 고르는 것이 화면과 맞다.
+	-- 가중치 뽑기(picker)를 안 쓰는 이유도 같다. 가중치는 화면에 안 보이는 값이라
+	-- 똑같이 100% 인데 누구는 더 잘 뽑히는 것처럼 된다.
+	--
+	-- 떨어진 사람의 예약은 **안 쓰였으므로 그대로 남는다.** 다음 판에 또 100% 로 다툰다.
+	-- 하나씩 무작위로 빼는 것은 남은 사람 모두에게 같은 확률을 준다.
+	local bookerSeats = math.min(Config.DRAW_NEXT_SEATS, Config.DRAWERS_PER_ROUND)
+	while #bookers > bookerSeats do
+		table.remove(bookers, math.random(#bookers))
+	end
+
 	local chosen: { Player } = {}
 	local seatsLeft = Config.DRAWERS_PER_ROUND
-	for _, player in drawCandidates() do
-		if seatsLeft <= Config.DRAWERS_PER_ROUND - Config.DRAW_NEXT_SEATS then
-			break
-		end
-		if PlayerStats.HasDrawNext(player) then
-			table.insert(chosen, player)
-			seatsLeft -= 1
-		end
+	for _, player in bookers do
+		table.insert(chosen, player)
+		seatsLeft -= 1
 	end
 
 	-- 남은 자리는 평범하게 뽑는다.
@@ -811,8 +897,13 @@ local function startRound()
 
 	-- 실제로 자리를 받은 뒤에 예약을 차감한다.
 	-- 미리 빼면 여기서 오류가 났을 때 돈만 내고 못 그린 사람이 생긴다.
+	--
+	-- 그리고 **그리게 된 사람 전원**의 게이지를 0 으로 돌린다.
+	-- ⚠️ 예약으로 들어온 사람은 뽑기(Pick)를 안 거쳐서, 여기서 안 돌리면 게이지가 그대로 남는다.
+	--    두 자리를 다 예약자가 차지하는 판에서는 아무도 리셋되지 않는다.
 	for _, player in chosen do
 		PlayerStats.UseDrawNext(player)
+		picker:ResetAfterDrawing(player.UserId)
 	end
 
 	-- 이번에 안 그린 사람 **전원**의 가중치를 올린다.

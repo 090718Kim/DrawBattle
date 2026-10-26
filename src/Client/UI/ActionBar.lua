@@ -104,6 +104,23 @@ function ActionBar:SetHistoryState(canUndo: boolean, canRedo: boolean)
 	UIHelper.setDisabled(self.redoButton, not canRedo)
 end
 
+-- 이 줄이 세로줄에서 차지하는 높이. (세로줄의 배율을 곱하기 전 값)
+-- 줄을 숨겼을 때 그 자리를 빈칸으로 대신 채우려고 쓴다. (DrawBattleUI 의 PeekSpacer)
+--
+-- 버튼 수를 3 으로 박지 않고 직접 센다. 나중에 버튼을 하나 더 달아도 그대로 맞는다.
+function ActionBar:Height(): number
+	local count = 0
+	for _, child in self.instance:GetChildren() do
+		if child:IsA("GuiButton") then
+			count += 1
+		end
+	end
+	if count == 0 then
+		return 0
+	end
+	return count * UI.ACTION_BUTTON_SIZE + (count - 1) * UI.ACTION_BUTTON_GAP
+end
+
 function ActionBar:_bindKeys()
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		-- 채팅 입력 중이면 무시. 안 그러면 "z" 를 칠 때마다 그림이 지워진다.

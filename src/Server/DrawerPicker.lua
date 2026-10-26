@@ -132,10 +132,20 @@ function DrawerPicker:Pick(candidates: { Player }, count: number): { Player }
 	-- 안 그리기를 선언한 사람은 후보(pool)에 아예 없는데 그 사람들도 올라야 하므로,
 	-- 부르는 쪽이 "이번에 안 그린 사람" 전체를 모아 Gain 으로 넘긴다.
 	for _, player in chosen do
-		self.weights[player.UserId] = Config.PICK_BASE_WEIGHT
+		self:ResetAfterDrawing(player.UserId)
 	end
 
 	return chosen
+end
+
+-- 이번 판에 그린 사람의 가중치를 처음으로 돌린다. 게이지가 0% 가 된다.
+--
+-- ⚠️ 뽑기(Pick)를 거치지 않고 자리에 들어간 사람에게도 **반드시** 불러야 한다.
+--    "다음 판 그리기" 를 산 사람이 그렇다. 예전에는 Pick 안에서만 돌려놔서
+--    산 사람은 그리고 나서도 게이지가 그대로였다. "그리면 리셋" 이라는 약속이 깨진 것이다.
+--    그래서 "그렸다" 를 처리하는 일을 이 함수 하나로 모아뒀다. (README §5.5-3)
+function DrawerPicker:ResetAfterDrawing(userId: number)
+	self.weights[userId] = Config.PICK_BASE_WEIGHT
 end
 
 return DrawerPicker

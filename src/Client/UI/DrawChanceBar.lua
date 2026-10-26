@@ -170,6 +170,11 @@ function DrawChanceBar:_buildButtons(parent: Instance)
 
 	self.sitOutButton = self:_button(row, "SitOut", 1, 1)
 	self.sitOutButton.Activated:Connect(function()
+		-- 흐리게 만드는 것만으로는 클릭이 안 막힌다. (UIHelper.setDisabled 참고)
+		-- 서버도 똑같이 거절하지만, 화면에서 먼저 막아야 눌렀는데 아무 일도 없는 순간이 안 생긴다.
+		if self.sitOutButton:GetAttribute("Disabled") then
+			return
+		end
 		self.callbacks.onToggleSitOut()
 	end)
 end
@@ -198,10 +203,15 @@ end
 -- info 는 서버가 보낸 내 몫이다. 없으면(아직 안 왔으면) 0 으로 둔다.
 --   info.progress  차례 진행도 (0~1). 막대와 숫자 **둘 다** 이 값을 쓴다.
 --   info.optedOut  안 그리기를 선언했는가
+--   info.hasDrawNext "다음 판 그리기" 예약을 들고 있는가
 function DrawChanceBar:Update(info: any)
 	local progress = if info then info.progress or 0 else 0
 	local sittingOut = if info then info.optedOut == true else false
 	self.sittingOut = sittingOut
+	-- 예약이 있으면 쉬기를 못 누른다. (확정 2026-10-27)
+	-- 쉬는 중에 "돌아오기" 는 언제나 된다. 잠그는 것은 **쉬러 가는 쪽만**이다.
+	-- 그래야 어떤 이유로든 둘이 겹쳐도 갇히지 않는다.
+	local locked = info ~= nil and info.hasDrawNext == true and not sittingOut
 
 	-- 막대와 숫자는 **같은 값**이어야 한다. 다르면 화면이 자기 모순을 일으킨다.
 	self.fill.Size = UDim2.fromScale(math.clamp(progress, 0, 1), 1)
@@ -219,8 +229,15 @@ function DrawChanceBar:Update(info: any)
 	self.fill.BackgroundColor3 = if sittingOut then UI.MUTED_TEXT_COLOR else UI.ACCENT_COLOR
 	self.titleLabel.TextColor3 = if sittingOut then UI.ACCENT_COLOR else UI.MUTED_TEXT_COLOR
 
-	self.sitOutButton.Text = if sittingOut then "Join back" else "Sit out"
+	-- 잠겼을 때 "Sit out" 을 흐리게만 두면 왜 안 눌리는지 모른다. 이유를 글자로 보여준다.
+	--
+	-- ⚠️ 기호(✓)는 안 쓴다. 같은 기호 묶음의 ✕ 가 로블록스 기본 글꼴에 없어서
+	--    **빈 네모로 나온 적이 있다.** (ShopPanel 닫기 버튼) 글자로만 쓰면 어느 기기에서나 나온다.
+	self.sitOutButton.Text = if locked then "Booked for next round" elseif sittingOut then "Join back" else "Sit out"
 	UIHelper.setSelected(self.sitOutButton, sittingOut)
+	UIHelper.setDisabled(self.sitOutButton, locked)
+	-- setDisabled 는 배경만 흐리게 한다. 이 버튼은 글자가 본체라 글자도 같이 흐린다.
+	self.sitOutButton.TextColor3 = if locked then UI.MUTED_TEXT_COLOR else UI.TEXT_COLOR
 
 end
 

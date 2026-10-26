@@ -113,6 +113,12 @@ function Toolbar:_bindNumberKeys()
 		if input.UserInputType ~= Enum.UserInputType.Keyboard then
 			return
 		end
+		-- 도구 줄이 안 보이면 단축키도 없다. ActionBar 의 Z·Y 와 같은 규칙이다.
+		-- 예전에는 이 검사가 없어서, 관전 중이든 상대 그림을 보는 중이든
+		-- 숫자를 누르면 **안 보이는 곳에서** 도구가 바뀌어 있었다.
+		if not self.instance.Visible then
+			return
+		end
 
 		local index = input.KeyCode.Value - firstKey + 1
 		local tool = Config.TOOLS[index]

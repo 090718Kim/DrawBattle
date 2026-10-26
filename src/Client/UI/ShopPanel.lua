@@ -49,6 +49,7 @@ function ShopPanel.new(parent: Instance, callbacks: {
 	self.tokens = 0
 	self.promptTaken = false
 	self.prices = {}
+	self.drawNext = "available"
 
 	local panel = UIHelper.panel("ShopPanel", parent)
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -241,6 +242,14 @@ function ShopPanel:_buyButton(
 		if productId == 0 then
 			return -- 아직 상품이 없다
 		end
+		-- ⚠️ 흐린 버튼도 눌린다. 모양을 믿지 말고 **지금 살 수 있는지 여기서 다시 본다.**
+		--    이게 없어서 "다음 판 그리기" 를 산 사람이 같은 버튼으로 또 살 수 있었다.
+		if button:GetAttribute("Disabled") then
+			return
+		end
+		if product == "DRAW_NEXT" and self.drawNext ~= "available" then
+			return -- 이미 샀거나 품절이다
+		end
 		-- 결제 성사 여부는 **서버가 판단한다.** (ProcessReceipt)
 		-- 여기서는 창을 띄우기만 하고 아무 상태도 안 바꾼다. (§3.4)
 		MarketplaceService:PromptProductPurchase(Players.LocalPlayer, productId)
@@ -281,6 +290,21 @@ function ShopPanel:_paintBuyButtons()
 		button.Text = string.format("%s   R$%d", label, self.prices[product] or 0)
 		UIHelper.setDisabled(button, not ready)
 	end
+
+	-- "다음 판 그리기" 는 라운드당 정원(DRAW_NEXT_SEATS)이 있어서 상태가 셋이다. (§3.2)
+	--
+	-- ⚠️ 살 수 없을 때 버튼을 **꺼야** 한다. 켜두면 이미 산 사람이 또 사거나,
+	--    품절인데 사버린다. 서버는 받은 돈은 돌려줄 수 없으니 그다음 판으로 미루는데,
+	--    산 사람은 "다음 판" 이라고 알고 샀으니 약속을 어긴 게 된다.
+	--    애초에 못 사게 막는 게 맞다.
+	if self.drawNext == "mine" then
+		-- ✓ 기호는 안 쓴다. ✕ 처럼 빈 네모로 나올 수 있다. (DrawChanceBar 참고)
+		self.drawBuyButton.Text = "Booked for next round"
+		UIHelper.setDisabled(self.drawBuyButton, true)
+	elseif self.drawNext == "soldout" then
+		self.drawBuyButton.Text = "Draw next round — sold out"
+		UIHelper.setDisabled(self.drawBuyButton, true)
+	end
 end
 
 -- 서버가 보낸 대답을 띄운다. 통과했으면 칸을 비운다.
@@ -297,12 +321,14 @@ function ShopPanel:ShowResult(ok: boolean, message: string)
 	end
 end
 
--- tokens 가진 주제 작성권 수
--- taken  다음 라운드 주제가 이미 정해졌는가 (내가 정했든 남이 정했든)
--- mine   그것을 정한 사람이 나인가 — 안내 문구만 달라진다
-function ShopPanel:Update(tokens: number, taken: boolean, mine: boolean)
+-- tokens   가진 주제 작성권 수
+-- taken    다음 라운드 주제가 이미 정해졌는가 (내가 정했든 남이 정했든)
+-- mine     그것을 정한 사람이 나인가 — 안내 문구만 달라진다
+-- drawNext "다음 판 그리기" 상태: "available" / "mine" / "soldout"
+function ShopPanel:Update(tokens: number, taken: boolean, mine: boolean, drawNext: string?)
 	self.tokens = tokens
 	self.promptTaken = taken
+	self.drawNext = drawNext or "available"
 
 	self.heldLabel.Text = string.format("Theme tickets: %d", tokens)
 

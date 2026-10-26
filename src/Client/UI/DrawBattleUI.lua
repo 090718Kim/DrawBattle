@@ -69,6 +69,14 @@ function DrawBattleUI.new(playerGui: Instance)
 	-- 캔버스를 먼저 만들어야 UI 가 연결할 대상이 생긴다.
 	self.canvas = DrawingCanvas.new(self.canvasLabel)
 
+	-- 엿보기용 종이. **보기만** 한다.
+	-- 만들자마자 꺼둔다. 꺼진 종이는 선도 안 긋고 마우스도 안 숨긴다.
+	-- (출력창에 "render mode" 줄이 두 번 찍히는 것은 종이가 두 장이라서다)
+	self.peekCanvas = DrawingCanvas.new(self.peekLabel)
+	self.peekCanvas:SetEnabled(false)
+	-- 상점에서 엿보기를 산 뒤 👀 로 상대 그림을 보고 있는가 (내가 누른 상태)
+	self.peekViewing = false
+
 	self:_buildPanels()
 	self:_buildPanelToggle()
 	self:_buildSpectateToggle()
@@ -144,6 +152,19 @@ function DrawBattleUI:_buildSideBar()
 	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	layout.Parent = bar
 
+	-- 상대 그림을 보는 동안 숨긴 도구 자리를 대신 채우는 빈칸.
+	-- 이 줄은 화면 **세로 가운데**에 맞춰져 있어서, 위의 버튼이 빠지면 줄이 짧아지며
+	-- 👀 가 방금 누른 자리에서 **도망간다.** 돌아오려면 버튼을 다시 찾아야 한다.
+	-- 높이는 _updateToolVisibility 가 매번 정한다.
+	local spacer = Instance.new("Frame")
+	spacer.Name = "PeekSpacer"
+	spacer.BackgroundTransparency = 1
+	spacer.Size = UDim2.fromOffset(1, 0)
+	spacer.LayoutOrder = 1 -- 되돌리기 줄과 같은 자리
+	spacer.Visible = false
+	spacer.Parent = bar
+	self.peekSpacer = spacer
+
 	local scale = Instance.new("UIScale")
 	scale.Parent = bar
 	self.sideBarScale = scale
@@ -163,7 +184,7 @@ function DrawBattleUI:_buildStats()
 	self.statsBarScale.Parent = self.statsBar.instance
 
 	-- 값은 여기 한 곳에만 둔다. StatsBar 는 받아서 그리기만 한다. (§5.5-1)
-	self.stats = { wins = 0, score = 0, tokens = 0 }
+	self.stats = { wins = 0, score = 0, tokens = 0, drawNextBooked = false }
 
 	local player = Players.LocalPlayer
 
@@ -200,41 +221,102 @@ function DrawBattleUI:_buildStats()
 	--
 	-- leaderstats 에 안 넣은 이유: 그건 공개 순위표라 남의 개수까지 보인다.
 	-- 특성은 로블록스가 알아서 복제해주므로 통로를 새로 팔 필요가 없다.
+	--
+	-- ⚠️ 접속 직후에는 값이 **비어 있다.** 서버가 저장소를 읽는 데 1초쯤 걸리기 때문이다.
+	--    그러다 "비어 있음 → 1" 로 바뀌는데, 이걸 "티켓을 새로 받았다" 로 착각하면
+	--    티켓이 있는 사람이 들어올 때마다 "You got +1 ticket!" 이 뜬다.
+	--    **처음 도착한 값은 받은 게 아니라 원래 있던 것이다.** 그때는 알리지 않는다.
+	local function known(name: string): boolean
+		return player:GetAttribute(name) ~= nil
+	end
+
 	self.stats.tokens = player:GetAttribute("PromptTokens") or 0
+	local tokensLoaded = known("PromptTokens")
 	player:GetAttributeChangedSignal("PromptTokens"):Connect(function()
 		local before = self.stats.tokens
 		self.stats.tokens = player:GetAttribute("PromptTokens") or 0
 		self:_paintStats()
+		self:_paintShop()
+
+		if not tokensLoaded then
+			tokensLoaded = true
+			return -- 저장소에서 막 읽어온 값이다. 새로 받은 것이 아니다.
+		end
 
 		-- 늘었을 때만 알린다. 쓰거나 줄어든 것은 본인이 한 일이라 알릴 것이 없다.
 		--
 		-- 20분은 긴 시간이라, 받은 줄 모르고 지나가면 그동안 기다린 것이
 		-- 없던 일이 된다. 오른쪽 아래 숫자가 0에서 1로 바뀌는 것만으로는
 		-- 아무도 못 알아챈다.
-		self:_paintShop()
-
 		local gained = self.stats.tokens - before
 		if gained > 0 and self.toast then
 			self.toast:Show(string.format("You got +%d Write a Theme ticket!", gained))
 		end
 	end)
+
+	-- "다음 라운드에 내가 그리기" 를 사뒀는가. 이것도 서버가 특성으로 알려준다.
+	self.stats.drawNextBooked = player:GetAttribute("DrawNextBooked") == true
+	local bookedLoaded = known("DrawNextBooked")
+	player:GetAttributeChangedSignal("DrawNextBooked"):Connect(function()
+		local before = self.stats.drawNextBooked
+		self.stats.drawNextBooked = player:GetAttribute("DrawNextBooked") == true
+		self:_paintShop()
+
+		if not bookedLoaded then
+			bookedLoaded = true
+			return -- 원래 사둔 것이다. 방금 산 게 아니다.
+		end
+		-- 사고 나서 아무 반응이 없으면 결제가 된 건지 알 수가 없다.
+		if self.stats.drawNextBooked and not before and self.toast then
+			self.toast:Show("You'll draw next round!")
+		end
+	end)
 end
 
 -- 상점에 넘길 값은 두 곳에서 온다.
---   티켓 수    → 특성(Attribute). 서버가 바꿀 때마다 곧바로 온다.
---   주제 임자  → 라운드 상태. broadcast 때 온다.
+--   티켓 수, 내 예약  → 특성(Attribute). 서버가 바꿀 때마다 곧바로 온다.
+--   주제 임자, 남의 예약 → 라운드 상태. broadcast 때 온다.
 -- 둘 중 하나만 바뀌어도 다시 칠해야 하므로 한 함수로 모아둔다.
 function DrawBattleUI:_paintShop()
 	if not self.shop then
 		return
 	end
-	local owner = self.lastState and self.lastState.nextPromptOwner
+	local state = self.lastState
+	local owner = state and state.nextPromptOwner
 	local me = Players.LocalPlayer.UserId
+
+	-- "다음 판 그리기" 버튼의 상태. 라운드당 **DRAW_NEXT_SEATS 명까지**다. (§3.2)
+	--   mine     — 내가 사뒀다. 또 살 필요가 없다
+	--   soldout  — 남이 이미 샀다. 이번엔 못 산다
+	--   available — 살 수 있다
+	--
+	-- 내 것은 특성으로, 남의 것은 라운드 상태(drawInfo 의 booked)로 안다.
+	-- 내 것을 특성으로 보는 이유: 두 사람이 거의 동시에 사면 서버는 한 명만
+	-- 다음 판에 넣고 나머지는 그다음 판으로 미룬다. 미뤄진 사람의 drawInfo 에는
+	-- booked 가 안 찍히지만, 돈은 냈으니 "품절" 이 아니라 "예약됨" 으로 보여야 한다.
+	--
+	-- 품절은 **남이 산 자리가 DRAW_NEXT_SEATS 개를 채웠을 때**다.
+	-- 서버가 받는 수와 같은 숫자를 봐야 화면이 거짓말을 안 한다.
+	local drawNext = "available"
+	if self.stats.drawNextBooked then
+		drawNext = "mine"
+	elseif state and state.drawInfo then
+		local taken = 0
+		for key, info in state.drawInfo do
+			if key ~= tostring(me) and info.booked then
+				taken += 1
+			end
+		end
+		if taken >= Config.DRAW_NEXT_SEATS then
+			drawNext = "soldout"
+		end
+	end
+
 	-- 주제를 이미 누가 정했는지만 넘긴다. **글자는 안 넘어온다.**
 	-- 미리 알면 혼자 연습하고 들어올 수 있다. (§3.1)
 	-- 한 번 정해지면 아무도 못 고친다. 내가 정했든 남이 정했든 칸은 잠긴다.
 	-- mine 은 안내 문구를 가르는 데만 쓴다.
-	self.shop:Update(self.stats.tokens, owner ~= nil, owner == me)
+	self.shop:Update(self.stats.tokens, owner ~= nil, owner == me, drawNext)
 end
 
 function DrawBattleUI:_paintStats()
@@ -301,9 +383,25 @@ function DrawBattleUI:_buildShop()
 		icon = "👀",
 		layoutOrder = 40,
 	})
+	-- 흰 버튼이면 되돌리기·휴지통 사이에 묻혀서 있는 줄도 모른다.
+	-- 돈 내고 쓰는 버튼이라 더더욱 눈에 띄어야 한다.
+	self.peekButton.BackgroundColor3 = UI.PEEK_COLOR
+	self.peekButton.BackgroundTransparency = 0
 	self.peekButton.Visible = false
 	self.peeking = false
+	-- 버튼 하나가 두 가지 일을 한다.
+	--   사기 전  — 결제창을 띄운다
+	--   산 뒤    — 내 그림 ↔ 상대 그림을 바꿔 보여준다 (라운드 끝까지 몇 번이든)
+	--
+	-- 산 뒤에 버튼을 숨기면 바꿔 볼 방법이 없다. 그래서 그대로 두고 하는 일만 바꾼다.
+	-- 산 건지 아닌지는 **서버가 알려준 값(peeking)** 으로만 판단한다.
+	-- 화면이 "샀다" 고 멋대로 정하면 돈을 안 냈는데 열리는 길이 생긴다. (§3.4)
 	self.peekButton.Activated:Connect(function()
+		if self.peeking then
+			self.peekViewing = not self.peekViewing
+			self:_refreshView()
+			return
+		end
 		local productId = Config.PRODUCT_IDS.PEEK
 		if productId == 0 then
 			return -- 아직 상품이 없다
@@ -363,6 +461,58 @@ function DrawBattleUI:_buildCanvas()
 
 	-- 종이처럼 보이도록 모서리를 살짝 둥글게. 그림 영역과는 상관없다.
 	UIHelper.corner(canvasLabel, 8)
+
+	-- 엿보기용 두 번째 종이. **상대 그림만** 그린다. (§2 캐시템)
+	--
+	-- 왜 종이를 하나 더 만드나
+	--   내 종이 하나로 "내 그림 ↔ 상대 그림" 을 바꿔 보여주려면, 바꿀 때마다
+	--   종이를 비우고 다시 그려야 한다. 그런데 비우는 순간 **내 그림이 날아간다.**
+	--   서버에서 다시 받아올 수는 있어도, 되돌리기 기록은 내 컴퓨터에만 있어서 못 살린다.
+	--   종이를 두 장 겹쳐 두고 **보이는 쪽만 바꾸면** 내 그림은 숨겨질 뿐 그대로 남는다.
+	--
+	-- 같은 칸(area) 안에 같은 크기로 넣는다. 그래서 자리와 크기는 따로 신경 쓸 필요가 없다.
+	-- 캔버스 자리를 정하는 코드가 칸만 옮기면 두 장이 같이 따라온다.
+	local peekLabel = Instance.new("ImageLabel")
+	peekLabel.Name = "PeekCanvas"
+	peekLabel.Size = UDim2.fromScale(1, 1)
+	peekLabel.BackgroundColor3 = Config.CANVAS_BACKGROUND_COLOR
+	peekLabel.BackgroundTransparency = 0
+	peekLabel.BorderSizePixel = 0
+	-- 혹시라도 둘이 같이 보이면 상대 그림이 위에 오게 한다. 평소에는 숨겨져 있다.
+	peekLabel.ZIndex = canvasLabel.ZIndex + 1
+	peekLabel.Visible = false
+	peekLabel.Parent = area
+	self.peekLabel = peekLabel
+	UIHelper.corner(peekLabel, 8)
+
+	-- 상대 그림을 볼 때 종이에 굵은 보라색 테두리를 두른다.
+	-- 종이 색이 내 것과 똑같아서, 이게 없으면 지금 누구 그림인지 헷갈린다.
+	-- 종이의 자식이라 종이가 숨으면 같이 숨는다. 따로 켜고 끌 필요가 없다.
+	local border = Instance.new("UIStroke")
+	border.Name = "PeekBorder"
+	border.Color = UI.PEEK_COLOR
+	border.Thickness = UI.PEEK_BORDER
+	border.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	border.Parent = peekLabel
+
+	-- 지금 보는 게 상대 그림이라는 표시. 이게 없으면 내 그림이 사라진 줄 안다.
+	-- 돌아가는 방법까지 적는다. 처음 보면 어떻게 돌아가는지 모른다.
+	local badge = UIHelper.label("👀 Opponent's drawing  ·  press 👀 to go back", peekLabel)
+	badge.Name = "PeekBadge"
+	badge.AnchorPoint = Vector2.new(0.5, 0)
+	badge.Position = UDim2.new(0.5, 0, 0, 10)
+	badge.Size = UDim2.fromOffset(0, 34)
+	badge.AutomaticSize = Enum.AutomaticSize.X
+	badge.BackgroundColor3 = UI.PEEK_COLOR
+	badge.BackgroundTransparency = 0
+	badge.TextColor3 = Color3.new(1, 1, 1)
+	badge.Font = Enum.Font.GothamBold
+	badge.TextSize = 16
+	badge.TextXAlignment = Enum.TextXAlignment.Center
+	-- 종이 그림(EditableImage)보다 위에 떠야 한다.
+	badge.ZIndex = peekLabel.ZIndex + 5
+	UIHelper.corner(badge, 8)
+	UIHelper.padding(badge, 8)
 end
 
 --------------------------------------------------------------------
@@ -592,8 +742,21 @@ function DrawBattleUI:_measureFreeRect()
 	local x1, y1 = viewport.X, viewport.Y
 
 	-- 보이지 않는 것은 자리를 차지하지 않는다.
+	--
+	-- ⚠️ 단, 엿보기 중에 숨긴 도구는 **자리를 그대로 맡아둔다.** (keepSpot)
+	--    안 그러면 👀 를 누를 때마다 도구가 비킨 만큼 캔버스가 커졌다 작아졌다 한다.
+	--    두 그림을 번갈아 보며 비교하는 기능인데, 볼 때마다 크기가 달라지면 비교가 안 된다.
+	--    게다가 돌아올 때는 되맞춤(1초)이 돌기 전까지 도구가 캔버스를 덮는다.
+	--    숨겨도 AbsolutePosition·AbsoluteSize 는 계속 계산되므로 그 값을 그대로 쓴다.
+	--    **엿보기 때문에 숨긴 것만** 해당한다. 관전 줄·게이지처럼 원래 안 보이는 것까지
+	--    자리를 맡으면, 엿보는 순간 캔버스가 오히려 작아진다.
+	local peekHidden: { [GuiObject]: boolean } = {}
+	if self.peekShown == true then
+		peekHidden[self.toolbar.instance] = true
+		peekHidden[self.colorPanel.instance] = true
+	end
 	local function box(gui: GuiObject?): (Vector2?, Vector2?)
-		if not gui or not gui.Visible then
+		if not gui or not (gui.Visible or peekHidden[gui]) then
 			return nil, nil
 		end
 		local size = gui.AbsoluteSize
@@ -693,16 +856,41 @@ function DrawBattleUI:_updateToolVisibility()
 		and self.lastState.phase == Config.PHASE.RATING
 
 	self.canvasRegion.Visible = self.showCanvas == true
+	-- 두 장 중 하나만 보인다. 내 종이는 숨길 뿐, 비우지 않는다. (_buildCanvas 참고)
+	self.canvasLabel.Visible = not self.peekShown
+	self.peekLabel.Visible = self.peekShown == true
 
 	-- 1) 무엇이 보이는지 먼저 전부 정한다.
 	--    배치 계산이 이 값들을 쓰므로, 순서가 뒤집히면 한 박자 늦게 반영된다.
 	-- 도구는 경고창이 떠 있어도 그대로 둔다. 사라지면 화면이 요동친다.
 	local showTools = self.showTools == true
-	self.toolbar.instance.Visible = showTools
-	self.actionBar.instance.Visible = showTools
+	-- 상대 그림을 보는 동안에는 붓·색·되돌리기를 **통째로 치운다.** (확정 2026-10-27)
+	-- 이때는 어차피 못 그린다(canDraw). 남겨두면 눌러도 안 되는 버튼이 잔뜩 떠 있는 셈이다.
+	-- 단축키도 같이 잠긴다. Z·Y(ActionBar)와 1~5(Toolbar)는 자기 줄이 숨겨져 있으면 무시한다.
+	--
+	-- ⚠️ showTools 자체는 건드리지 않는다. 그건 "내가 지금 그리는 사람인가" 이고,
+	--    👀 버튼과 상점 버튼, 캔버스 배치가 전부 그 값을 본다.
+	--    거기에 엿보기를 섞으면 👀 버튼까지 사라져서 **내 그림으로 돌아올 길이 없어진다.**
+	local showBrushes = showTools and not self.peekShown
+	self.toolbar.instance.Visible = showBrushes
+	self.actionBar.instance.Visible = showBrushes
 	-- 서랍 여는 버튼은 좁은 화면에서, 그릴 수 있을 때만 쓸모가 있다.
-	self.panelToggle.Visible = showTools and compact
-	self.colorPanel.instance.Visible = showTools and ((not compact) or self.panelOpen)
+	self.panelToggle.Visible = showBrushes and compact
+	self.colorPanel.instance.Visible = showBrushes and ((not compact) or self.panelOpen)
+
+	-- 세로줄에서 빠진 만큼 빈칸으로 채운다. (_buildSideBar 의 PeekSpacer)
+	-- 숨긴 것: 되돌리기 줄, 좁은 화면이면 🎨 서랍 버튼과 그 사이 틈까지.
+	-- 남은 👀 는 그 아래에 있으므로, 위가 같은 높이로 채워지면 제자리에 있다.
+	-- 상태를 기억해두지 않고 매번 새로 계산한다. 기억해둔 값은 언젠가 어긋난다.
+	local spacerHeight = 0
+	if self.peekShown then
+		spacerHeight = self.actionBar:Height()
+		if compact then
+			spacerHeight += UI.SIDE_BAR_GAP + UI.PANEL_TOGGLE_SIZE
+		end
+	end
+	self.peekSpacer.Visible = spacerHeight > 0
+	self.peekSpacer.Size = UDim2.fromOffset(1, spacerHeight)
 
 	-- 눈 버튼은 관전할 수 있을 때만. 목록은 그 버튼을 눌렀을 때만.
 	--
@@ -727,8 +915,12 @@ function DrawBattleUI:_updateToolVisibility()
 	self.shop.instance.Visible = self.shopOpen == true
 
 	-- 엿보기는 반대로 **그리는 동안에만** 쓸 수 있다.
-	-- 이미 산 사람에게는 숨긴다. 두 번 사도 더 보이는 것이 없다.
-	self.peekButton.Visible = showTools and not self.peeking
+	-- 산 뒤에도 버튼은 남는다. 그때부터는 "바꿔 보기" 버튼이다.
+	self.peekButton.Visible = showTools
+	-- 지금 상대 그림을 보는 중이면 눌린 모양으로 둔다. 어느 쪽을 보는지 헷갈리지 않게.
+	UIHelper.setSelected(self.peekButton, self.peekShown == true)
+	-- 상품을 아직 안 만들었고 산 적도 없으면 누를 일이 없다.
+	UIHelper.setDisabled(self.peekButton, Config.PRODUCT_IDS.PEEK == 0 and not self.peeking)
 	-- ⚠️ 캔버스 자리를 재기 **전에** 놓아야 한다.
 	--    아래에서 _measureFreeRect 가 이 줄의 위치를 재기 때문에,
 	--    순서가 뒤집히면 캔버스가 한 박자 늦게 따라온다.
@@ -1095,16 +1287,30 @@ function DrawBattleUI:_buildPanels()
 	self.spectateBarScale.Parent = self.spectateBar.instance
 
 	self.actionBar = ActionBar.new(self.sideBar, {
+		-- ⚠️ 상대 그림을 보는 동안에는 셋 다 막는다.
+		--    내 종이는 숨겨져 있을 뿐 살아 있어서, Z 를 누르면 **안 보이는 내 그림이** 지워진다.
+		--    돌아와서야 선이 없어진 걸 알게 된다. 단축키(Z, Y)도 이 함수를 지나므로 같이 막힌다.
+		--    지금은 그동안 이 줄 자체가 숨겨져서(_updateToolVisibility) 1차로 막힌다.
+		--    여기는 2차 잠금이다. 숨기는 조건이 언젠가 바뀌어도 그림은 안 지워지게.
 		onUndo = function()
+			if self.peekShown then
+				return
+			end
 			canvas:Undo()
 		end,
 		onRedo = function()
+			if self.peekShown then
+				return
+			end
 			canvas:Redo()
 		end,
 		-- 휴지통은 바로 지우지 않는다. 경고창을 먼저 띄운다.
 		-- 되돌리기로 취소할 수 있게 만들어두긴 했지만,
 		-- 그림을 다 그린 뒤에 잘못 누르면 심장이 내려앉는 버튼이라 한 번 더 묻는다.
 		onClear = function()
+			if self.peekShown then
+				return -- 상대 그림을 보는 중이다. 안 보이는 내 그림을 지우면 안 된다.
+			end
 			-- 경고창이 떠 있는 동안은 그릴 자격을 잠시 거둔다.
 			-- 감춰둔 마우스 포인터가 돌아와야 창의 버튼을 누를 수 있기 때문이다.
 			-- 원래 자격이 있었는지 기억해뒀다가 그대로 되돌린다.
@@ -1180,7 +1386,12 @@ function DrawBattleUI:_connectRound()
 
 	-- 관전 중인 사람이 새로 그은 선.
 	Remotes.event(Remotes.STROKE_ADDED).OnClientEvent:Connect(function(userId, data)
-		-- 내가 보고 있는 사람 것만 그린다.
+		-- 그리는 중에 상대 그림이 오면 엿보기용 종이에 그린다.
+		if self:_isPeekSource(userId) then
+			self.peekCanvas:DrawStroke(DrawingCanvas.DeserializeStroke(data))
+			return
+		end
+		-- 그 밖에는 내가 보고 있는 사람 것만 그린다.
 		-- 내가 그은 선도 여기로 되돌아오지만, 그릴 때는 viewing 이 nil 이라 걸러진다.
 		if self.viewing ~= userId then
 			return
@@ -1188,8 +1399,15 @@ function DrawBattleUI:_connectRound()
 		self.canvas:DrawStroke(DrawingCanvas.DeserializeStroke(data))
 	end)
 
-	-- 관전을 시작할 때 받는 그림 전체.
+	-- 관전을 시작할 때, 또는 엿보기를 산 순간에 받는 그림 전체.
 	Remotes.event(Remotes.CANVAS_SYNC).OnClientEvent:Connect(function(userId, list)
+		if self:_isPeekSource(userId) then
+			self.peekCanvas:Clear()
+			for _, data in list do
+				self.peekCanvas:DrawStroke(DrawingCanvas.DeserializeStroke(data))
+			end
+			return
+		end
 		if self.viewing ~= userId then
 			return -- 답이 오는 사이에 다른 사람으로 옮겼다
 		end
@@ -1201,6 +1419,29 @@ function DrawBattleUI:_connectRound()
 
 	-- 중간에 들어왔어도 지금 상태를 바로 받아본다.
 	Remotes.event(Remotes.REQUEST_STATE):FireServer()
+end
+
+-- 이 사람의 선을 엿보기용 종이에 그려야 하는가.
+--
+-- 조건: 지금 그리는 단계이고, 나도 이번 판에 그리는 사람이고, 보낸 사람은 상대다.
+--
+-- ⚠️ "엿보기를 샀는가(peeking)" 는 **일부러 안 본다.**
+--    서버는 엿보기를 열어주는 순간 ① 상대 그림 전체를 보내고 ② 그다음에 "열렸다" 는
+--    상태를 보낸다. 순서가 그렇다. peeking 을 보고 거르면 ①이 ②보다 먼저 와서 버려지고,
+--    빈 종이만 보이게 된다. 돈을 냈는데 지금까지 그린 게 하나도 안 보이는 셈이다.
+--
+--    애초에 서버는 산 사람에게만 상대 그림을 보낸다. (RoundService 의 canSee)
+--    **그림이 왔다는 것 자체가 볼 자격이 있다는 뜻이다.** 화면은 받은 것을 보여주기만 한다.
+function DrawBattleUI:_isPeekSource(userId: number): boolean
+	local state = self.lastState
+	if not state or state.phase ~= Config.PHASE.DRAWING then
+		return false
+	end
+	local me = Players.LocalPlayer.UserId
+	if userId == me then
+		return false
+	end
+	return table.find(state.drawers, me) ~= nil and table.find(state.drawers, userId) ~= nil
 end
 
 -- 처음에 띄울 그림. 아무도 안 고른 상태에서 쓰인다.
@@ -1294,10 +1535,17 @@ function DrawBattleUI:_applyRoundState(state)
 	ok, err = pcall(function()
 		if drawing and self.roundPhase ~= Config.PHASE.DRAWING then
 			self.canvas:Clear()
+			-- 엿보기용 종이도 같이 비운다. 지난 판 상대 그림이 남아 있으면 안 된다.
+			self.peekCanvas:Clear()
 		end
 	end)
 	if not ok then
 		warn("[DrawBattle] Canvas clear failed: " .. tostring(err))
+	end
+	-- 그리는 단계가 아니면 엿보기 화면은 무조건 닫는다.
+	-- 심사로 넘어갔는데 상대 그림 쪽에 멈춰 있으면 내 그림으로 못 돌아온다.
+	if not drawing then
+		self.peekViewing = false
 	end
 	self.roundPhase = state.phase
 
@@ -1369,9 +1617,29 @@ function DrawBattleUI:_refreshView()
 	-- 하나로 묶었더니 경고창을 띄우는 순간 팔레트와 펜이 통째로 사라졌다.
 	self.showTools = amSeated and drawing and not submitted
 
+	-- 엿보기를 샀는가. **서버가 알려준 값으로만** 정한다.
+	--
+	-- ⚠️ 아래 canDraw 보다 **먼저** 정해야 한다. 상대 그림을 보는 중이면 못 그리기 때문이다.
+	--    뒤에서 정하면 이번 차례에는 옛 값을 보고 판단해서 한 박자 늦는다.
+	local mine = state.drawInfo and state.drawInfo[tostring(userId)]
+	local peeking = mine ~= nil and mine.peeking == true
+	if peeking and not self.peeking then
+		-- 막 열렸다. 산 줄 모르고 지나가지 않게 어떻게 쓰는지까지 알려준다.
+		self.toast:Show("Peek unlocked! Press 👀 to switch views.")
+	end
+	self.peeking = peeking
+
+	-- 지금 상대 그림을 보여줄 것인가.
+	-- 내가 👀 를 눌렀고(peekViewing), 실제로 샀고(peeking), 아직 그리는 중일 때만.
+	-- 셋 중 하나라도 아니면 무조건 내 그림으로 돌아온다. 갇히는 일이 없게.
+	self.peekShown = self.peekViewing and self.peeking and self.showTools
+
 	-- ⚠️ 이 잠금은 클라이언트 편의 기능일 뿐이다. 익스플로잇으로 우회된다.
 	--    서버가 스트로크를 받을 때마다 자격을 다시 검사한다. (README §3.4, §7-7)
-	self.canDraw = self.showTools and not dialogOpen
+	--
+	-- 상대 그림을 보는 동안에는 못 그린다. **그 사이에도 타이머는 간다.**
+	-- 이게 엿보기의 대가다. 베끼려면 시간을 써야 한다. (§3.3)
+	self.canDraw = self.showTools and not dialogOpen and not self.peekShown
 
 	-- 그릴 차례 게이지를 숨기는 경우는 둘이다.
 	--
@@ -1414,9 +1682,7 @@ function DrawBattleUI:_refreshView()
 	self:_paintStats()
 	-- 내 몫만 꺼내 쓴다. 서버는 전원 몫을 한 번에 보낸다.
 	-- 표의 열쇠가 문자열인 이유: 로블록스는 숫자 열쇠를 그대로 실어 보내지 못한다.
-	local mine = state.drawInfo and state.drawInfo[tostring(userId)]
 	self.chanceBar:Update(mine)
-	self.peeking = mine ~= nil and mine.peeking == true
 
 	self:_paintShop()
 
