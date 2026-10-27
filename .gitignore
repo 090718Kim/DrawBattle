@@ -11,3 +11,7 @@
 # 에디터
 .vscode/
 .DS_Store
+
+# 한 줄 메모 — 일지 재료. 다듬지 않은 생각이라 공개하지 않는다.
+# 정리된 주간 일지(devlog/YYYY-MM-DD.md)만 올린다.
+devlog/memo.md

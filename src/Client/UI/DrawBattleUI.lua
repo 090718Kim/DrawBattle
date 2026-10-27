@@ -9,8 +9,10 @@
 		└ Backdrop            화면 전체. 기본은 완전 투명이라 3D 맵이 그대로 보인다.
 		  ├ CanvasRegion      UI 자리를 뺀 나머지 영역
 		  │ └ CanvasArea      그 안에 들어가는 가장 큰 정사각형
-		  │ ├ Canvas          실제로 그림이 그려지는 ImageLabel
-		  │ └ ActionBar       되돌리기 / 다시하기 / 전체지우기 (캔버스 위쪽 바깥)
+		  │   ├ Canvas        실제로 그림이 그려지는 ImageLabel (내 그림)
+		  │   ├ PeekCanvas    엿보기로 보는 상대 그림 (평소에는 숨어 있다)
+		  │   └ PeekToggle    👀 버튼 (그림판 오른쪽 위 모서리 바로 바깥)
+		  ├ SideBar           오른쪽 세로줄 (되돌리기 줄 / 🎨 / 👁 / 🛒)
 		  ├ ColorPanel        왼쪽 색상 패널
 		  ├ TopBar            위쪽 줄 (주제 / 제출 / 남은 시간)
 		  ├ Toolbar           아래쪽 도구 모음 (그리는 사람)
@@ -151,19 +153,6 @@ function DrawBattleUI:_buildSideBar()
 	layout.Padding = UDim.new(0, UI.SIDE_BAR_GAP)
 	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	layout.Parent = bar
-
-	-- 상대 그림을 보는 동안 숨긴 도구 자리를 대신 채우는 빈칸.
-	-- 이 줄은 화면 **세로 가운데**에 맞춰져 있어서, 위의 버튼이 빠지면 줄이 짧아지며
-	-- 👀 가 방금 누른 자리에서 **도망간다.** 돌아오려면 버튼을 다시 찾아야 한다.
-	-- 높이는 _updateToolVisibility 가 매번 정한다.
-	local spacer = Instance.new("Frame")
-	spacer.Name = "PeekSpacer"
-	spacer.BackgroundTransparency = 1
-	spacer.Size = UDim2.fromOffset(1, 0)
-	spacer.LayoutOrder = 1 -- 되돌리기 줄과 같은 자리
-	spacer.Visible = false
-	spacer.Parent = bar
-	self.peekSpacer = spacer
 
 	local scale = Instance.new("UIScale")
 	scale.Parent = bar
@@ -376,18 +365,78 @@ function DrawBattleUI:_buildShop()
 	-- 관전자용 눈 버튼(👁)과 아이콘을 달리 뒀다. 둘이 하는 일이 다르다.
 	-- 관전자 것은 공짜로 목록을 여닫고, 이건 로벅스를 내고 상대 그림을 연다.
 	-- 같은 그림을 쓰면 그리는 사람이 "아까 그 버튼" 인 줄 알고 누른다.
-	self.peekButton = UIHelper.iconButton({
-		name = "PeekToggle",
-		parent = self.sideBar,
-		size = UI.SHOP_TOGGLE_SIZE,
-		icon = "👀",
-		layoutOrder = 40,
-	})
-	-- 흰 버튼이면 되돌리기·휴지통 사이에 묻혀서 있는 줄도 모른다.
-	-- 돈 내고 쓰는 버튼이라 더더욱 눈에 띄어야 한다.
-	self.peekButton.BackgroundColor3 = UI.PEEK_COLOR
-	self.peekButton.BackgroundTransparency = 0
-	self.peekButton.Visible = false
+	--
+	-- **그림판 오른쪽 위 모서리 바로 바깥**에 붙인다. (확정 2026-10-27 개발자 요청)
+	-- 예전에는 오른쪽 세로줄 맨 아래에 있었는데, 넓은 화면에서는 그림판과 멀리 떨어져서
+	-- 눈에 잘 안 띄었다. 그리는 사람의 눈은 그림판에 가 있으니 그 옆에 둔다.
+	--
+	-- 왜 하필 "오른쪽 **위**" 인가 — 다른 자리는 화면에 따라 무언가와 겹친다.
+	--   오른쪽 가운데  태블릿(1024x768)에서 그림판과 세로줄 사이가 33px 뿐이라 세로줄과 겹친다.
+	--                  세로줄도 화면 세로 가운데에 있어서 높이가 정확히 같다.
+	--   상단 바 안     폭이 고정(520)이고 주제·Submit·시간으로 이미 꽉 차 있다.
+	--   그림판 아래    펜 줄(툴바)이 있다.
+	--   그림판 안      그림을 가린다. 처음부터 "그림판과 겹치지 않게" 가 조건이었다.
+	--   오른쪽 위는 세로줄보다 위쪽이라, 폭이 모자란 화면에서도 세로 방향으로 비켜 간다.
+	--   (PC·폰 가로·태블릿·폰 세로 네 가지로 계산해서 확인했다)
+	--
+	-- 그림판 칸(canvasArea)의 **자식**으로 넣는다. 그림판이 트윈으로 움직이고 커져도
+	-- 따로 계산하지 않고 그대로 따라온다. 바깥에 두면 같은 트윈을 하나 더 걸어야 하고,
+	-- 둘이 한 프레임이라도 어긋나면 버튼이 그림판 위로 올라탄다.
+	-- 그림판 칸은 자식을 자르지 않으므로(ClipsDescendants 기본값 false) 바깥에 둬도 보인다.
+	-- 그림 입력은 종이(canvasLabel) 안에서 시작된 것만 받으므로 여기를 눌러도 선이 안 그어진다.
+	local peekButton = Instance.new("TextButton")
+	peekButton.Name = "PeekToggle"
+	-- 버튼의 왼쪽 위 모서리를 그림판 오른쪽 위 모서리 옆에 맞춘다.
+	-- 틈(offset)과 배율은 화면 크기에 따라 _applyLayout 이 정한다.
+	peekButton.AnchorPoint = Vector2.new(0, 0)
+	peekButton.Position = UDim2.new(1, UI.CANVAS_GAP, 0, 0)
+	peekButton.Size = UDim2.fromOffset(UI.PEEK_BUTTON_WIDTH, UI.PEEK_BUTTON_HEIGHT)
+	-- 흰 버튼이면 배경에 묻혀서 있는 줄도 모른다. 돈 내고 쓰는 버튼이라 더더욱 눈에 띄어야 한다.
+	peekButton.BackgroundColor3 = UI.PEEK_COLOR
+	peekButton.BackgroundTransparency = 0
+	peekButton.BorderSizePixel = 0
+	peekButton.AutoButtonColor = true
+	peekButton.Text = ""
+	peekButton.ZIndex = 10
+	peekButton.Visible = false
+	peekButton.Parent = self.canvasArea
+	UIHelper.corner(peekButton)
+	-- setSelected 가 이 테두리 색으로 "지금 상대 그림을 보는 중" 을 보여준다.
+	UIHelper.stroke(peekButton)
+	self.peekButton = peekButton
+
+	-- 이름이 "Icon" 이어야 setDisabled 가 같이 흐리게 만든다. (UIHelper 의 약속)
+	local peekIcon = UIHelper.label("👀", peekButton)
+	peekIcon.Name = "Icon"
+	peekIcon.Position = UDim2.fromOffset(0, 6)
+	peekIcon.Size = UDim2.new(1, 0, 0, 58)
+	peekIcon.TextXAlignment = Enum.TextXAlignment.Center
+	peekIcon.Font = Enum.Font.GothamBold
+	peekIcon.TextSize = 31
+	peekIcon.ZIndex = 11
+
+	-- 아이콘만 있으면 처음 보는 사람은 무슨 버튼인지 모른다. **누르면 무엇을 하는지** 글자로 적는다.
+	--   Peek — 상대 그림을 본다 (사기 전에는 결제창이 뜬다)
+	--   Back — 내 그림으로 돌아간다
+	-- 글자는 _updateToolVisibility 가 상태에 맞춰 바꾼다.
+	local peekCaption = UIHelper.label("Peek", peekButton)
+	peekCaption.Name = "Caption"
+	peekCaption.AnchorPoint = Vector2.new(0, 1)
+	peekCaption.Position = UDim2.new(0, 0, 1, -8)
+	peekCaption.Size = UDim2.new(1, 0, 0, 22)
+	peekCaption.TextXAlignment = Enum.TextXAlignment.Center
+	peekCaption.Font = Enum.Font.GothamBold
+	peekCaption.TextSize = 17
+	peekCaption.TextColor3 = Color3.new(1, 1, 1)
+	peekCaption.ZIndex = 11
+	self.peekCaption = peekCaption
+
+	-- 그림판 칸에는 배율이 안 걸려 있다. 다른 버튼들처럼 화면 크기에 맞춰 줄이려면 따로 단다.
+	-- 왼쪽 위(AnchorPoint)를 기준으로 줄어들므로 그림판 쪽 모서리는 그대로 붙어 있다.
+	local peekScale = Instance.new("UIScale")
+	peekScale.Parent = peekButton
+	self.peekButtonScale = peekScale
+
 	self.peeking = false
 	-- 버튼 하나가 두 가지 일을 한다.
 	--   사기 전  — 결제창을 띄운다
@@ -658,6 +707,10 @@ function DrawBattleUI:_applyLayout()
 	self.spectateBarScale.Scale = layout.scale
 	self.statsBarScale.Scale = layout.scale
 	self.chanceBarScale.Scale = layout.scale
+	-- 👀 는 그림판 칸에 붙어 있어서 자리는 알아서 따라오고, 크기와 틈만 맞추면 된다.
+	-- 틈은 그림판과 다른 UI 사이의 틈(layout.right)과 똑같이 둔다.
+	self.peekButtonScale.Scale = layout.scale
+	self.peekButton.Position = UDim2.new(1, layout.right, 0, 0)
 	self:_placeChanceBar()
 
 	self:_updateToolVisibility()
@@ -750,8 +803,12 @@ function DrawBattleUI:_measureFreeRect()
 	--    숨겨도 AbsolutePosition·AbsoluteSize 는 계속 계산되므로 그 값을 그대로 쓴다.
 	--    **엿보기 때문에 숨긴 것만** 해당한다. 관전 줄·게이지처럼 원래 안 보이는 것까지
 	--    자리를 맡으면, 엿보는 순간 캔버스가 오히려 작아진다.
+	--
+	--    그래서 "아직 그리는 중(showTools)" 일 때만 맡는다. 제출한 뒤에는 도구가
+	--    원래 없으므로 엿보기와 상관없이 숨어 있다. 그때 자리를 맡으면, 제출 뒤 커졌던
+	--    그림판이 👀 를 누를 때마다 그리던 때 크기로 줄어든다.
 	local peekHidden: { [GuiObject]: boolean } = {}
-	if self.peekShown == true then
+	if self.peekShown == true and self.showTools == true then
 		peekHidden[self.toolbar.instance] = true
 		peekHidden[self.colorPanel.instance] = true
 	end
@@ -795,9 +852,15 @@ function DrawBattleUI:_measureFreeRect()
 	end
 
 	-- 오른쪽: 세로줄
-	pos, size = box(self.sideBar)
-	if pos then
-		x1 = math.min(x1, pos.X)
+	--
+	-- ⚠️ 엿보는 동안에는 세로줄의 버튼(되돌리기 줄, 🎨)이 전부 숨어서 줄이 **텅 빈다.**
+	--    그래도 자리는 맡아둔다. 위의 peekHidden 과 같은 이유다.
+	--    (예전에는 👀 가 이 줄에 남아 있어서 저절로 맡아졌다. 그림판 옆으로 옮기면서 따로 챙긴다)
+	--    빈 줄은 높이가 0 이라 box 가 버리므로, 왼쪽 끝 위치만 직접 읽는다.
+	--    세로줄은 폭이 고정이라 비어 있어도 그 위치는 믿을 수 있다.
+	--    맡는 조건은 위의 peekHidden 과 같다(아직 그리는 중일 때만). 같은 이유로 움직이는 규칙이다.
+	if self.sideBar.Visible or (self.peekShown == true and self.showTools == true) then
+		x1 = math.min(x1, (self.sideBar.AbsolutePosition - base).X)
 	end
 
 	return x0 + gap, y0 + gap, x1 - gap, y1 - gap
@@ -878,20 +941,6 @@ function DrawBattleUI:_updateToolVisibility()
 	self.panelToggle.Visible = showBrushes and compact
 	self.colorPanel.instance.Visible = showBrushes and ((not compact) or self.panelOpen)
 
-	-- 세로줄에서 빠진 만큼 빈칸으로 채운다. (_buildSideBar 의 PeekSpacer)
-	-- 숨긴 것: 되돌리기 줄, 좁은 화면이면 🎨 서랍 버튼과 그 사이 틈까지.
-	-- 남은 👀 는 그 아래에 있으므로, 위가 같은 높이로 채워지면 제자리에 있다.
-	-- 상태를 기억해두지 않고 매번 새로 계산한다. 기억해둔 값은 언젠가 어긋난다.
-	local spacerHeight = 0
-	if self.peekShown then
-		spacerHeight = self.actionBar:Height()
-		if compact then
-			spacerHeight += UI.SIDE_BAR_GAP + UI.PANEL_TOGGLE_SIZE
-		end
-	end
-	self.peekSpacer.Visible = spacerHeight > 0
-	self.peekSpacer.Size = UDim2.fromOffset(1, spacerHeight)
-
 	-- 눈 버튼은 관전할 수 있을 때만. 목록은 그 버튼을 눌렀을 때만.
 	--
 	-- 심사 중에는 목록이 늘 펼쳐져 있으므로 눈 버튼이 필요 없다.
@@ -914,9 +963,12 @@ function DrawBattleUI:_updateToolVisibility()
 	end
 	self.shop.instance.Visible = self.shopOpen == true
 
-	-- 엿보기는 반대로 **그리는 동안에만** 쓸 수 있다.
+	-- 엿보기는 반대로 **그리는 단계에만** 쓸 수 있다. 제출한 뒤에도 남는다. (_refreshView 의 canPeek)
 	-- 산 뒤에도 버튼은 남는다. 그때부터는 "바꿔 보기" 버튼이다.
-	self.peekButton.Visible = showTools
+	-- 버튼은 그림판 칸 안에 있으므로, 그림판이 숨으면(관전·결과) 이 값과 상관없이 같이 숨는다.
+	self.peekButton.Visible = self.canPeek == true
+	-- 글자는 **지금 누르면 무엇을 하는지**를 적는다. 상대 그림을 보는 중이면 돌아가는 버튼이다.
+	self.peekCaption.Text = if self.peekShown then "Back" else "Peek"
 	-- 지금 상대 그림을 보는 중이면 눌린 모양으로 둔다. 어느 쪽을 보는지 헷갈리지 않게.
 	UIHelper.setSelected(self.peekButton, self.peekShown == true)
 	-- 상품을 아직 안 만들었고 산 적도 없으면 누를 일이 없다.
@@ -927,11 +979,11 @@ function DrawBattleUI:_updateToolVisibility()
 	self:_placeChanceBar()
 
 	-- 오른쪽 세로줄에 버튼이 하나라도 있으면 캔버스가 그쪽을 비켜줘야 한다.
+	-- (👀 는 이제 이 줄이 아니라 그림판 옆에 있다. 엿보는 동안 비는 자리는 _measureFreeRect 가 챙긴다)
 	self.sideBarVisible = self.actionBar.instance.Visible
 		or self.panelToggle.Visible
 		or self.spectateToggle.Visible
 		or self.shopToggle.Visible
-		or self.peekButton.Visible
 	self.sideBar.Visible = self.sideBarVisible
 
 	-- 2) 그 결과로 캔버스 자리를 정한다.
@@ -1335,8 +1387,6 @@ function DrawBattleUI:_buildPanels()
 			canvas:SetEnabled(self.wasEnabled)
 		end,
 	})
-
-	self:_buildToast()
 end
 
 -- 캔버스에서 일어난 일을 UI 에 되돌려 알린다.
@@ -1350,7 +1400,17 @@ function DrawBattleUI:_connectCanvas()
 
 	canvas.onColorPicked = function(color)
 		self.colorPanel:SetColor(color)
-		self:_showToast("Color picked")
+		-- 2초만 띄운다. (확정 2026-10-27 개발자 결정) 다른 알림(3.5초)보다 짧게 둔다.
+		-- 그리다가 자주 쓰는 도구라, 길게 떠 있으면 그림 위쪽을 계속 가린다.
+		--
+		-- ⚠️ 2026-10-27 까지 이 알림은 **한 번도 안 떴다.** 알림 장치가 둘 있었기 때문이다.
+		--    예전 것(아래쪽 작은 창)이 먼저 self.toast 라는 이름으로 만들어지고,
+		--    나중에 생긴 상점 쪽 알림(Toast 모듈)이 **같은 이름을 덮어썼다.**
+		--    여기서는 계속 예전 창을 켠다고 믿고 self.toast.Visible = true 를 했는데,
+		--    그 이름은 이미 GUI 가 아니라 Lua 표였다. Lua 는 표에 없는 칸을 써도
+		--    **오류 없이** 칸을 하나 새로 만들고 끝난다. 그래서 아무도 몰랐다.
+		--    알림 장치를 하나로 합쳐서 같은 이름을 두 번 쓸 일 자체를 없앴다.
+		self.toast:Show("Color picked", 2)
 	end
 
 	-- 3단계에서 여기에 서버 전송을 붙인다.
@@ -1629,10 +1689,24 @@ function DrawBattleUI:_refreshView()
 	end
 	self.peeking = peeking
 
+	-- 👀 를 쓸 수 있는가. **이번 판의 그리는 사람이면 제출한 뒤에도** 쓴다. (확정 2026-10-27 개발자 결정)
+	--
+	-- 처음에는 showTools(= 아직 그리는 중)를 그대로 썼다. 그래서 Submit 을 누르는 순간 👀 가 사라졌다.
+	-- 그런데 제출하고 나서 남은 시간에 "상대는 뭘 그렸나" 가 제일 궁금하다. 이때 사도 된다.
+	-- 이미 제출했으니 베낄 수도 없다. (§3.3 의 걱정이 오히려 사라지는 때다)
+	--
+	-- 서버는 원래부터 "제출했는가" 를 안 본다. applyPeek 과 canSee 둘 다 단계와
+	-- "그리는 사람인가" 만 본다. 그래서 바꿀 것은 화면 쪽 조건 하나뿐이다.
+	--
+	-- 의자에 앉아 있어야 한다는 조건은 그림판이 보이는 조건(showCanvas 의 1번)과 같다.
+	-- 👀 는 그림판에 붙어 있으므로 그림판 없이 혼자 뜰 일이 없게 맞춰둔다.
+	self.canPeek = amSeated and drawing
+
 	-- 지금 상대 그림을 보여줄 것인가.
-	-- 내가 👀 를 눌렀고(peekViewing), 실제로 샀고(peeking), 아직 그리는 중일 때만.
+	-- 내가 👀 를 눌렀고(peekViewing), 실제로 샀고(peeking), 👀 를 쓸 수 있을 때만.
 	-- 셋 중 하나라도 아니면 무조건 내 그림으로 돌아온다. 갇히는 일이 없게.
-	self.peekShown = self.peekViewing and self.peeking and self.showTools
+	-- (심사로 넘어가면 canPeek 이 거짓이 되어 저절로 돌아온다. 심사 때는 관전 줄로 둘 다 본다)
+	self.peekShown = self.peekViewing and self.peeking and self.canPeek
 
 	-- ⚠️ 이 잠금은 클라이언트 편의 기능일 뿐이다. 익스플로잇으로 우회된다.
 	--    서버가 스트로크를 받을 때마다 자격을 다시 검사한다. (README §3.4, §7-7)
@@ -1688,48 +1762,6 @@ function DrawBattleUI:_refreshView()
 
 	self.canvas:SetEnabled(self.canDraw)
 	self:_updateToolVisibility()
-end
-
---------------------------------------------------------------------
--- 짧은 안내 문구
---------------------------------------------------------------------
-
-function DrawBattleUI:_buildToast()
-	local toast = UIHelper.panel("Toast", self.backdrop)
-	-- 화면 위쪽은 되돌리기 버튼 자리라 겹친다. 툴바 바로 위가 비어 있어서 거기에 놓는다.
-	local toolbarHeight = UI.TOOL_BUTTON_SIZE + 16
-	toast.AnchorPoint = Vector2.new(0.5, 1)
-	toast.Position = UDim2.new(0.5, 0, 1, -(UI.TOOLBAR_BOTTOM_MARGIN + toolbarHeight + 10))
-	toast.Size = UDim2.fromOffset(320, 38)
-	toast.Visible = false
-	-- 색상 패널(10)·툴바(10) 보다 위. 좁은 화면에서 패널이 열려 있어도 보여야 한다.
-	toast.ZIndex = 20
-	self.toast = toast
-
-	local label = UIHelper.label("", toast)
-	label.Name = "Message"
-	label.Size = UDim2.fromScale(1, 1)
-	label.ZIndex = 21
-	label.TextXAlignment = Enum.TextXAlignment.Center
-	self.toastLabel = label
-
-	-- 안내가 연달아 뜰 때 먼저 뜬 것의 타이머가 나중 것을 꺼버리면 안 된다.
-	-- 번호를 매겨서 "내가 띄운 게 아직 그대로일 때만 끈다" 로 막는다.
-	self.toastId = 0
-end
-
-function DrawBattleUI:_showToast(message: string)
-	self.toastId += 1
-	local id = self.toastId
-
-	self.toastLabel.Text = message
-	self.toast.Visible = true
-
-	task.delay(2, function()
-		if self.toastId == id then
-			self.toast.Visible = false
-		end
-	end)
 end
 
 return DrawBattleUI
