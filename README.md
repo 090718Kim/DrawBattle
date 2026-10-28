@@ -1,7 +1,7 @@
 # Drawing Battle
 
-**A Roblox 1v1 drawing game where the audience is the judge.**
-Two players draw the same theme against the clock. Everyone else watches live and rates both drawings with 1–5 stars.
+**A Roblox competitive drawing game where the audience is the judge.**
+Two players (or more) draw the same theme against time. Everyone else watches live and rates both drawings with 1–5 stars.
 
 > The full design document is written in Korean and starts below this English overview.
 > It is the project's single source of truth, and code comments point to its sections as `README §x.y`.
