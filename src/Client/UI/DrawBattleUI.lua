@@ -15,6 +15,7 @@
 		  ├ SideBar           오른쪽 세로줄 (되돌리기 줄 / 🎨 / 👁 / 🛒)
 		  ├ ColorPanel        왼쪽 색상 패널
 		  ├ TopBar            위쪽 줄 (주제 / 제출 / 남은 시간)
+		  ├ TipLine           상단 바 아래 흐린 팁 (기다리는 동안만)
 		  ├ Toolbar           아래쪽 도구 모음 (그리는 사람)
 		  ├ SpectateBar       아래쪽 관전 목록 + 별점 줄
 		  ├ ResultsPanel      결과 단계에 뜨는 라운드 결과
@@ -49,6 +50,7 @@ local Layout = require(script.Parent.Layout)
 local TopBar = require(script.Parent.TopBar)
 local SpectateBar = require(script.Parent.SpectateBar)
 local StatsBar = require(script.Parent.StatsBar)
+local TipLine = require(script.Parent.TipLine)
 local DrawChanceBar = require(script.Parent.DrawChanceBar)
 local ShopPanel = require(script.Parent.ShopPanel)
 local Toast = require(script.Parent.Toast)
@@ -234,7 +236,7 @@ function DrawBattleUI:_buildStats()
 
 		-- 늘었을 때만 알린다. 쓰거나 줄어든 것은 본인이 한 일이라 알릴 것이 없다.
 		--
-		-- 20분은 긴 시간이라, 받은 줄 모르고 지나가면 그동안 기다린 것이
+		-- 21분은 긴 시간이라, 받은 줄 모르고 지나가면 그동안 기다린 것이
 		-- 없던 일이 된다. 오른쪽 아래 숫자가 0에서 1로 바뀌는 것만으로는
 		-- 아무도 못 알아챈다.
 		local gained = self.stats.tokens - before
@@ -242,6 +244,17 @@ function DrawBattleUI:_buildStats()
 			self.toast:Show(string.format("You got +%d Write a Theme ticket!", gained))
 		end
 	end)
+
+	-- ⏱️ 칸은 **이번에 이 서버에 들어온 뒤 지난 시간**이다. (확정 2026-10-28 개발자 결정)
+	--
+	-- 처음에는 서버가 저장해 둔 "총 플레이 시간" 을 보여줬다. 그런데 테스트 창 4개를 띄우니
+	-- 누구는 1분, 누구는 23분이었다. 가상 플레이어마다 예전 테스트에서 쌓인 기록이 달랐기 때문이다.
+	-- 같은 순간에 들어온 사람들이 서로 다른 숫자를 보면 고장으로 읽힌다.
+	--
+	-- 그래서 저장소를 안 쓴다. 이 화면이 만들어진 순간(= 접속 직후)부터 센다.
+	-- 다시 들어오면 0 부터다. 서버에 물어볼 것이 없으므로 통로도 특성도 필요 없다.
+	-- os.clock 은 시작점이 아무 데나여도 "두 순간 사이" 를 재는 데는 정확하다.
+	self.joinedAt = os.clock()
 
 	-- "다음 라운드에 내가 그리기" 를 사뒀는가. 이것도 서버가 특성으로 알려준다.
 	self.stats.drawNextBooked = player:GetAttribute("DrawNextBooked") == true
@@ -309,7 +322,9 @@ function DrawBattleUI:_paintShop()
 end
 
 function DrawBattleUI:_paintStats()
-	self.statsBar:Update(self.stats.wins, self.stats.score, self.stats.tokens)
+	-- ⏱️ 는 되맞춤(1초마다)이 이 함수를 부를 때 같이 오른다. 따로 시계를 돌릴 필요가 없다.
+	local sessionSeconds = if self.joinedAt then os.clock() - self.joinedAt else 0
+	self.statsBar:Update(self.stats.wins, self.stats.score, self.stats.tokens, sessionSeconds)
 end
 
 -- 그릴 차례 게이지. 그리는 동안에는 숨는다.
@@ -704,6 +719,8 @@ function DrawBattleUI:_applyLayout()
 	self.toolbarScale.Scale = layout.scale
 	self.sideBarScale.Scale = layout.scale
 	self.topBarScale.Scale = layout.scale
+	-- 팁은 상단 바 바로 아래. 상단 바는 위쪽 여백(배율 안 탐) + 높이(배율 탐) 이라 그대로 따라 계산한다.
+	self.tipLine:SetLayout(layout.scale, UI.TOP_BAR_MARGIN + (UI.TOP_BAR_HEIGHT + UI.TIP_GAP) * layout.scale)
 	self.spectateBarScale.Scale = layout.scale
 	self.statsBarScale.Scale = layout.scale
 	self.chanceBarScale.Scale = layout.scale
@@ -953,6 +970,20 @@ function DrawBattleUI:_updateToolVisibility()
 	self.spectateBar.instance.Visible = self.canSpectate == true and self.spectateOpen == true
 
 	self.chanceBar.instance.Visible = self.showChance == true
+
+	-- 팁이 보이는 때 (확정 2026-10-28 개발자 결정, 같은 날 한 번 고침)
+	--   대기·인터미션          — 모두에게
+	--   그리기 단계            — **그리지 않는 사람에게만.** 단, 관전 화면(그림판)을 열지 않았을 때
+	--   심사·결과              — 아무에게도 안 보인다
+	--
+	-- "그림판을 열지 않았을 때" 는 개발자가 말한 조건이 아니라 겹침 때문에 붙인 것이다.
+	-- 팁 자리가 상단 바 바로 아래인데, 그림판도 거기서부터 시작한다. 관전 중에 팁을 띄우면
+	-- 그림 위쪽을 덮는다. showCanvas 하나로 "그리는 사람" 과 "관전 중인 사람" 이 둘 다 걸러진다.
+	-- (처음에는 결과 때도 보였다. 결과는 다들 화면을 보는 때라 빼기로 했다)
+	local phase = if self.lastState then self.lastState.phase else nil
+	local waitingPhase = phase == Config.PHASE.WAITING or phase == Config.PHASE.INTERMISSION
+	local spectatorWithoutCanvas = phase == Config.PHASE.DRAWING and self.showCanvas ~= true
+	self.tipLine:SetVisible(waitingPhase or spectatorWithoutCanvas)
 
 	-- 상점은 **그리는 동안에는 안 연다.**
 	-- 여기서 파는 것은 전부 다음 라운드 물건이고,
@@ -1321,6 +1352,9 @@ function DrawBattleUI:_buildPanels()
 	})
 	self.topBarScale = Instance.new("UIScale")
 	self.topBarScale.Parent = self.topBar.instance
+
+	-- 상단 바 바로 아래에 흐리게 도는 팁. 기다리는 동안만 보인다. (_updateToolVisibility)
+	self.tipLine = TipLine.new(self.backdrop)
 
 	self.spectateBar = SpectateBar.new(self.backdrop, {
 		onSelect = function(userId)

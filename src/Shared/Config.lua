@@ -23,7 +23,7 @@ local Config = {}
 -- 한 자만 달라도 뜻이 정반대가 되므로, 한눈에 구분되는 낱말을 쓴다.
 -- 코드를 고칠 때마다 다음 낱말로 바꾼다: ALPHA → BRAVO → CHARLIE → DELTA ...
 -- ZULU 다음은 ALPHA2 → BRAVO2 ... 로 한 바퀴 더 돈다.
-Config.BUILD_TAG = "INDIA2"
+Config.BUILD_TAG = "NOVEMBER2"
 
 --------------------------------------------------------------------
 -- 캔버스
@@ -256,27 +256,61 @@ Config.PRODUCT_IDS = {
 	DRAW_NEXT = 3710340412, -- 대시보드 이름 "Draw Next Round"
 }
 
--- 확정: 게임에 들어와 **20분이 지나면** 주제 작성권을 하나 준다.
--- 로벅스로 사는 것과 같은 물건이다.
+-- 확정: 게임에서 **21분**을 놀 때마다 주제 작성권을 하나 준다. 로벅스로 사는 것과 같은 물건이다.
 --
--- ⚠️ 실제 기준은 **21분**이다. 유저에게는 20분이라고 말한다.
---    1분을 여유로 두는 이유: 15초마다 세는데다 서버가 밀리면 시간이 조금씩 뜬다.
---    "20분이라더니 왜 안 줘" 가 "어 벌써 줬네" 보다 나쁘다. 넉넉한 쪽으로 둔다.
+-- **유저에게도 21분이라고 말한다.** (확정 2026-10-28 개발자 결정, 팁 문구가 이 값을 그대로 쓴다)
+--   ⚠️ 예전에는 "실제 21분, 유저에게는 20분" 이었고 이유는 "넉넉한 쪽으로 둔다" 였다.
+--      그런데 20분이라 말하고 21분에 주면 **말한 것보다 늦게** 준다. 이유와 정반대였다.
+--      화면 어디에도 시간이 안 나와서 몰랐다가, 팁에 시간을 쓰면서 드러났다.
 --
 -- **대기 중인 시간도 센다.** 접속해 있으면 그냥 올라간다.
--- 빈 서버에 켜두고 방치해도 오르지만, 아래 "하나만" 규칙 때문에
--- 방치해서 얻을 수 있는 것은 **최대 한 장**이다. 쌓아둘 수가 없다.
+-- 완전히 방치하면 로블록스가 20분 만에 내보낸다(자리 비움 강제 퇴장).
+-- 다만 시간은 저장되므로 다시 들어오면 이어서 센다. 방치를 막아주는 장치는 아니다.
 --
 -- 테스트할 때는 여기를 30 처럼 짧게 바꿔서 확인한다.
 -- ⚠️ 확인이 끝나면 반드시 21 * 60 으로 되돌릴 것. 그대로 게시하면 공짜로 계속 나간다.
 Config.PLAY_SECONDS_PER_TOKEN = 21 * 60
 
--- 확정: **한 장까지만 가진다. 쓰기 전에는 다음 것을 못 받는다.**
+-- 확정: 무료 작성권은 **쌓인다. 상한 없음.** (2026-10-28 개발자 결정)
+-- 한 장 받은 뒤에도 다음 21분을 또 세서 또 준다.
 --
--- 가지고 있는 동안에는 시간이 아예 안 쌓인다.
--- 쌓아뒀다가 쓰는 순간 또 나오면 그건 결국 쌓아둔 것과 같기 때문이다.
--- 쓰고 나면 0 부터 다시 센다.
-Config.MAX_FREE_TOKENS = 1
+-- 예전 규칙은 "한 장까지만" 이었다. 다시 상한을 두고 싶으면 이 숫자만 바꾸면 된다. (예: 3)
+-- 상한에 닿으면 "다음 장" 시계만 멈추고 총 플레이 시간은 계속 센다. (PlayerStats.AddPlayTime)
+--
+-- 지켜볼 것: 오래 노는 사람이 작성권을 수십 장 모으면 30 R$ 짜리 유료 작성권이 덜 팔린다.
+--            그게 보이면 상한을 건다.
+Config.MAX_FREE_TOKENS = math.huge
+
+-- 기다리는 동안(대기·인터미션·결과) 상단 바 아래에 흐리게 돌아가며 보이는 팁. (2026-10-28 개발자 요청)
+-- 화면 글자라 영어로 쓴다. 고치고 싶으면 여기만 고치면 된다. 순서대로 돈다.
+--
+-- ⚠️ 숫자가 들어가는 팁은 **설정값에서 만든다.** 손으로 "21" 이라고 적어두면
+--    나중에 시간을 바꿨을 때 팁만 옛날 숫자로 남아 거짓말을 한다.
+--    (예전에 "20분" 이라고 말하던 일이 딱 그 모양이었다. 위 PLAY_SECONDS_PER_TOKEN 참고)
+--
+-- 프로 서버 팁("점수가 N 을 넘으면 프로 서버에 갈 수 있다")은 아직 안 넣는다.
+-- 프로 서버가 없고 기준 점수 N 도 안 정했다. 6단계에서 만들 때 같이 넣는다.
+-- 작성권 주기를 팁에 쓸 말로 바꾼다. 1분이 안 되면(테스트할 때) 초로 쓴다.
+-- 분으로만 쓰면 30초일 때 "every 0 minutes" 가 된다.
+local function ticketInterval(): string
+	local seconds = Config.PLAY_SECONDS_PER_TOKEN
+	if seconds < 60 then
+		return string.format("%d seconds", seconds)
+	end
+	return string.format("%d minutes", seconds // 60)
+end
+
+Config.TIPS = {
+	string.format("You get a free theme ticket every %s of play.", ticketInterval()),
+	"Free theme tickets stack up, so you can save them for later.",
+	"Use a theme ticket in the shop to choose the next round's theme.",
+	"Two players draw. Everyone else rates the drawings with stars.",
+	"Your turn priority goes up every round you don't draw.",
+	"Just want to watch? Press Sit out.",
+	"While drawing, you can buy Peek to see your opponent's drawing.",
+	"'Draw next round' in the shop fills your turn priority to 100%.",
+	"On PC, press 1-5 to switch tools and Z / Y to undo / redo.",
+}
 
 Config.PLAYTIME_TICK = 15
 
@@ -597,6 +631,13 @@ Config.UI = {
 	--    세로줄과 같은 줄에 들어가는데, 더 넓으면 화면 오른쪽 밖으로 삐져나간다.
 	PEEK_BUTTON_WIDTH = 74,
 	PEEK_BUTTON_HEIGHT = 96,
+
+	-- 흐린 팁 (상단 바 바로 아래, 기다리는 동안만). 문구는 Config.TIPS
+	TIP_GAP = 8, -- 상단 바와의 틈 (배율을 곱하기 전)
+	TIP_WIDTH = 520, -- 상단 바와 같은 폭. 길면 두 줄로 접힌다
+	TIP_TEXT_SIZE = 16,
+	TIP_TRANSPARENCY = 0.35, -- 흐리게. 0 이면 진하고 1 이면 안 보인다
+	TIP_SECONDS = 7, -- 팁 하나를 보여주는 시간
 
 	-- 짧게 떴다 사라지는 알림 (화면 위쪽 가운데)
 	TOAST_TOP = 78, -- 상단 바 바로 아래

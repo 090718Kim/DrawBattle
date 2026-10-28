@@ -1,4 +1,99 @@
-# DrawBattle
+# Drawing Battle
+
+**A Roblox 1v1 drawing game where the audience is the judge.**
+Two players draw the same theme against the clock. Everyone else watches live and rates both drawings with 1–5 stars.
+
+> The full design document is written in Korean and starts below this English overview.
+> It is the project's single source of truth, and code comments point to its sections as `README §x.y`.
+
+![Drawing screen](devlog/images/2026-10-25-drawing.png)
+*Drawing screen: canvas, color panel and tool bar (Roblox Studio test, October 2026)*
+
+| | |
+|---|---|
+| **Genre** | Party / drawing game |
+| **Platform** | Roblox (PC, mobile, tablet) |
+| **Period** | August 2026 – present |
+| **Status** | Pre-launch. Public release planned for early November 2026 |
+| **Team** | One developer, building with Claude Code (AI) |
+| **Tech** | Luau (`--!strict`), Rojo 7.7, Git · Roblox EditableImage, DataStoreService, MarketplaceService, TextService |
+
+## Who did what
+
+- **Me**: game design and every rule, prices of the Robux items, all play-testing (PC, mobile, tablet), finding bugs and guessing their causes, building the map and drawing seats in Roblox Studio, Creator Dashboard setup (developer products, API access), commits and devlogs.
+- **Claude Code (AI)**: wrote almost all of the code, following my decisions, and explained every change (why this way, what the alternatives were, and why not) so that I can learn the code and explain it myself.
+
+The design document below records each decision and who made it.
+
+## How a round works
+
+1. **Pick**: two players are picked at random. The longer you wait, the more likely you are to be picked
+2. **Theme**: both get the same theme, from a word list or one that a player set with a ticket
+3. **Draw**: each player draws on their own canvas before the timer runs out. Spectators watch both live
+4. **Rate**: spectators give each drawing 1–5 stars
+5. **Result**: more stars wins. Wins and score are saved to the leaderboard
+
+## Key features
+
+- **Drawing canvas**: a stroke-based canvas on `EditableImage` with pen, brush, line, eraser, eyedropper, undo/redo and a color wheel. Strokes stream to spectators in real time.
+- **Audience judging**: the server checks every rating (only spectators, only this round's drawers, 1–5 whole stars) and keeps wins and score in DataStore.
+- **Fair turns**: weighted random picking with a visible *Turn priority* gauge, no back-to-back turns when there are enough players, and a *Sit out* button.
+- **Robux items** (developer products): *Peek* at the opponent's drawing while drawing, a *Write a Theme* ticket (also free for every 21 minutes of play, and they stack), and *Draw next round*. Each purchase is granted once, even if Roblox retries the receipt.
+- **Every screen size**: all UI is built in code and scales from phones to monitors. Custom loading screen, and tips while waiting.
+
+![A theme set by a player](devlog/images/2026-10-25-theme.png)
+*A theme chosen by a player is revealed at the start of the round (Roblox Studio test, October 2026)*
+
+## Technical challenges
+
+### 1. Hiding is not the same as not sending
+- **Problem**: at first the server sent every stroke to every player, and the screen simply *hid* the opponent's drawing. Peek "un-hid" it. But anything sent to a player's computer can be read with an exploit, so a cheater could peek for free.
+- **Fix**: the server decides who may see a drawing (`canSee` in `RoundService.server.lua`) and **does not send** strokes to anyone who isn't allowed. The same rule guards the "send me the whole canvas" request.
+- **Follow-up**: buying Peek in the middle of a round must also show everything drawn so far, so the server sends the whole canvas first and live strokes after that. The screen deliberately does not re-check "did I buy it?", because the canvas arrives before the "unlocked" message and would be thrown away.
+
+### 2. A bug that is only sometimes right (found in my multiplayer test)
+- **Problem**: when two players bought *Draw next round*, only the first buyer's gauge filled to 100%. The second buyer still got to draw. Only the screen was wrong.
+- **Cause**: the gauge was part of the round state, which the server only sent when the round phase changed. Purchases can happen at any time. The first buyer looked correct only because something else happened to trigger a send.
+- **Fix**: the server re-sends the round state whenever a booking changes (it watches the player's `DrawNextBooked` attribute), so it no longer depends on luck.
+
+### 3. Waiting in the middle of a check (found in a code review I asked for)
+- **Problem**: two players could submit a theme at almost the same moment. Both passed the "is the slot free?" check, both lost a ticket, and the later one overwrote the first. Purchase receipts had the same shape and could grant an item twice.
+- **Cause**: between the check and the change, the server waits for Roblox's text filter (`FilterStringAsync`). While it waits, other requests run.
+- **Fix**: claim the slot *before* waiting, check again *after* waiting, and release the claim on every exit path.
+
+## Running it
+
+Requires Roblox Studio with the [Rojo](https://rojo.space) plugin.
+
+```bash
+rokit install   # installs Rojo 7.7.0, pinned in rokit.toml
+rojo serve      # then press Connect in the Rojo plugin in Roblox Studio
+```
+
+Saving uses DataStores, so turn on *Studio access to API services* in the game settings to test it in Studio.
+
+## Where to look
+
+| | |
+|---|---|
+| `src/ReplicatedFirst/` | Loading screen. Runs before the rest of the game arrives |
+| `src/Shared/Config.lua` | Every tunable value in one place (times, prices, colors, tips) |
+| `src/Shared/DrawingCanvas.lua` | Canvas core: tools, undo/redo, stroke data |
+| `src/Server/RoundService.server.lua` | The round loop, and who may see whose drawing (`canSee`) |
+| `src/Server/DrawerPicker.lua` | Weighted random picking of drawers |
+| `src/Server/PlayerStats.lua` | Leaderboard and saving (counters that only go up, merged with `UpdateAsync`) |
+| `src/Server/PurchaseService.lua` | Robux receipts, granted exactly once |
+| `src/Client/UI/` | Every screen element, built in code |
+
+Code comments are in Korean. I am learning from them. The full folder tree is in §6.1 below.
+
+## Devlog
+
+- [Devlog #1 — 2026-10-25](devlog/2026-10-25.md) (Korean)
+
+---
+
+# DrawBattle 설계 문서 (한국어)
 
 로블록스 1대1 그림 대결 게임. 관전자가 별점으로 심사한다.
 
@@ -69,24 +164,36 @@
 결정 사항이지만, 실제로 베끼는 사람이 나오면 `Config.PEEK_LASTS_ALL_ROUND` 를
 끄고 초 단위로 바꾼다. 그때를 위해 지켜볼 것.
 
-**게임에 들어와 20분이 지나면 주제 작성권을 하나 공짜로 준다.** (확정)
+**게임에서 21분을 놀 때마다 주제 작성권을 하나 공짜로 준다. 쌓인다.** (확정, 2026-10-28 개정)
 로벅스로 사는 것과 같은 물건이고, 개수는 화면 오른쪽 아래 🎟️ 칸에 뜬다.
 **하나도 없으면 그 칸은 아예 안 보인다.**
 
-- **실제 기준은 21분이다.** 유저에게는 20분이라고 말한다.
-  15초마다 세는데다 서버가 밀리면 시간이 조금씩 뜬다.
-  "20분이라더니 왜 안 줘" 가 "어 벌써 줬네" 보다 나쁘므로 넉넉한 쪽으로 둔다
+- **유저에게도 21분이라고 말한다.** (2026-10-28 개발자 결정) 기다리는 동안 뜨는 팁이
+  `Config.PLAY_SECONDS_PER_TOKEN` 에서 숫자를 그대로 만들어 쓴다
+  - ⚠️ 예전에는 "실제 21분, 유저에게는 20분" 이었고 이유는 "넉넉한 쪽으로 둔다" 였다.
+    그런데 20분이라 말하고 21분에 주면 **말보다 늦게** 준다. 이유와 정반대였다.
+    화면 어디에도 시간이 안 나와서 아무도 몰랐고, 팁에 시간을 쓰려다 드러났다 (AI 가 작업 중 발견)
 - **대기 중인 시간도 센다.** 접속해 있으면 그냥 오른다
-- **무료와 유료는 지갑이 다르다.** 무료는 한 장까지만, **로벅스로 산 것은 쌓인다.**
-  한 통으로 세면 유료로 한 장 산 사람이 그동안 무료를 못 받게 된다.
-  쓸 때는 **무료부터** 쓴다 — 무료는 써야 다시 차기 때문이다
-- **한 장까지만 가진다** (무료 한정). 쓰기 전에는 다음 것을 못 받는다.
-  가지고 있는 동안에는 시간이 **아예 안 쌓인다** — 쌓아뒀다가 쓰는 순간
-  또 나오면 결국 쌓아둔 것과 같기 때문이다. 쓰고 나면 0 부터 다시 센다
+- **쌓인다. 상한 없음.** (2026-10-28 개발자 결정, `Config.MAX_FREE_TOKENS = math.huge`)
+  한 장 받은 뒤에도 다음 21분을 또 세서 또 준다. 예전 규칙은 "한 장까지만" 이었다.
+  다시 상한을 두고 싶으면 그 숫자만 바꾸면 된다
+  - 상한에 닿으면 **"다음 장" 시계만** 멈추고 총 플레이 시간은 계속 센다
+  - 지켜볼 것: 오래 노는 사람이 수십 장을 모으면 유료 작성권(30 R$)이 덜 팔린다. 그게 보이면 상한을 건다
+  - ⚠️ **대기 중 시간도 세기 때문에, 상한이 없으면 빈 서버에 켜두고 방치해서 계속 모을 수 있다.**
+    예전에는 "한 장까지만" 이 바로 이걸 막아줬다 (그래서 대기 중 시간을 세도 괜찮았다).
+    모은 사람이 매 판 주제 자리(라운드당 하나, 먼저 넣는 사람 것)를 차지하면 돈 낸 사람이 못 넣는다.
+    상한을 둘지는 개발자가 정한다 (AI 가 작업 중 발견, 2026-10-28)
+- **무료와 유료는 지갑이 다르다.** 상한을 걸 수 있는 건 무료뿐이고, **로벅스로 산 것은 늘 쌓인다.**
+  한 통으로 세면 상한을 걸었을 때 유료로 한 장 산 사람이 그동안 무료를 못 받게 된다.
+  쓸 때는 **무료부터** 쓴다
 - 접속을 끊어도 **유지된다.** 19분에 끊겼다고 0 이 되면
   인터넷이 불안정한 사람만 손해를 본다
-- 빈 서버에 켜두고 방치해도 오르지만, 얻을 수 있는 것은 **최대 한 장**이다.
-  그걸 쓰려면 라운드가 돌아야 하므로 방치로는 아무것도 못 한다
+- 완전히 방치하면 로블록스가 20분 만에 내보낸다(자리 비움 퇴장). 다만 시간은 저장되므로
+  다시 들어오면 이어서 센다. 방치를 막아주는 장치는 아니다
+- **`playSeconds` 는 이제 진짜 총 플레이 시간이다** (화면 ⏱️ 칸은 이걸 안 쓴다 — 그건 이번 접속 시간이다). 예전에는 한 장 들고 있는 동안
+  "다음 장을 안 센다" 를 **시계를 멈추는 방법**으로 해서 총 시간까지 같이 멈췄다.
+  한 숫자에 두 가지 일을 맡긴 탓이다. 이제 총 시간은 늘 세고 "다음 장" 시계(`playSeconds − tokenClockBase`)만 따로 붙잡는다.
+  그래서 예전부터 하던 계정은 그동안 멈춘 만큼 총 시간이 적게 나온다 (출시 전이라 테스트 계정뿐)
 - 저장은 **전부 늘기만 하는 값**으로 둔다. 남은 개수 = 받은 것 + 산 것 − 쓴 것.
   남은 개수를 그대로 저장하면 줄어드는 값이 되어 delta 저장과 안 맞는다 (§3.11-2)
 - 다음 장까지의 시간은 **`tokenClockBase`(이번 판을 언제부터 셌나)** 로 잰다.
@@ -229,9 +336,34 @@
 
 ### 알림 (Toast) — 확정
 
-화면 위쪽 가운데에 짧게 떴다 사라진다. 지금은 작성권을 받았을 때만 쓴다.
-20분은 긴 시간이라, 받은 줄 모르고 지나가면 그동안 기다린 것이 없던 일이 된다.
+화면 위쪽 가운데에 짧게 떴다 사라진다. 게임의 **유일한** 알림 장치다 (작성권 받음, 캐시템 구매, 다음 주제 정해짐, 스포이드 등).
+21분은 긴 시간이라, 받은 줄 모르고 지나가면 그동안 기다린 것이 없던 일이 된다.
 오른쪽 아래 🎟️ 숫자가 0에서 1로 바뀌는 것만으로는 아무도 못 알아챈다.
+
+### 흐린 팁 / 플레이 시간 / 1인칭 막기 — 확정 (2026-10-28 개발자 결정)
+
+**흐린 팁** (`UI/TipLine.lua`, 문구는 `Config.TIPS`)
+- 상단 바 바로 아래에 흐리게 보인다. 보이는 때 (같은 날 한 번 고침):
+  - **대기·인터미션** — 모두에게
+  - **그리기 단계** — 그리지 않는 사람에게만. 단 관전 화면(그림판)을 열면 숨는다.
+    이 조건은 개발자가 말한 것이 아니라 **겹침 때문에** 붙였다 — 팁 자리와 그림판 윗부분이 같은 곳이다
+  - **심사·결과** — 아무에게도 안 보인다 (처음엔 결과 때도 보였다)
+- 7초마다 다음 팁으로 바뀐다. 첫 팁은 사람마다 무작위다 — 다들 첫 팁부터 보면 뒤쪽 팁은 아무도 못 본다
+- 숫자가 들어가는 팁은 **설정값에서 만든다.** 손으로 적으면 나중에 값을 바꿨을 때 팁만 옛 숫자로 남는다
+- 맵 위에 바로 떠 있어서 배경이 밝을 수도 어두울 수도 있다. 글자에 옅은 흰 테두리를 둘렀다
+- 프로 서버 팁은 아직 없다. 프로 서버와 기준 점수 N 이 생기면(6단계) 넣는다
+
+**⏱️ 이번 접속 시간** — 오른쪽 아래 점수 줄 끝, `45m` / `3h 12m`. **이 서버에 들어온 뒤 지난 시간**이다.
+- 처음에는 저장된 "총 플레이 시간" 을 보여줬다. 테스트 창 4개를 띄우니 누구는 1분, 누구는 23분이었다
+  (가상 플레이어마다 예전 테스트 기록이 달랐다). 같은 순간에 들어온 사람들이 다른 숫자를 보면 고장으로 읽힌다.
+  그래서 기준을 바꿨다 (개발자 테스트로 발견, 2026-10-28 개발자 결정)
+- 저장소를 안 쓰고 **화면이 스스로 센다** (접속 직후부터). 서버에 물어볼 것이 없어서 통로도 특성도 필요 없다
+- 초는 안 보여준다. 구석에서 숫자가 1초마다 움직이면 자꾸 눈이 간다
+
+**1인칭 막기** — `StarterPlayer.CameraMinZoomDistance = 8` (`default.project.json`).
+그리거나 UI 를 보다가 스크롤하면 카메라가 머리 속까지 들어가 1인칭이 됐다. 마우스가 화면 가운데에 묶여서
+빠져나오려면 O 키(또는 휠)로 다시 멀어져야 하는데, 그걸 아는 사람이 적다 (개발자 테스트로 발견).
+로블록스 기본 최소 거리는 0.5 라 거의 머리 속이다. 8 이면 스크롤해도 그 거리에서 멈춘다
 
 ### 안 그리기 (무료) — 확정
 
@@ -306,6 +438,34 @@
 뜻이 없고, 그리는 옆에 버튼이 있으면 방해가 된다.
 서버도 `isDrawer` 검사로 막으므로 화면만 끈 것이 아니다. (§3.4)
 
+### 로딩 화면 — 확정 (2026-10-28)
+
+| 항목 | 정한 것 (개발자 결정) |
+|---|---|
+| 제목 | `Drawing Battle` (대시보드에 등록된 게임 이름과 같게) |
+| 배경 | 모눈종이 (흰 바탕 + 옅은 격자, 다섯 칸마다 조금 진한 선) |
+| 넣은 것 | 진행 막대, 연필이 선을 긋는 애니메이션, Skip 버튼. 규칙 팁 문구는 안 넣었다 |
+| 사라질 때 | 게임을 다 받고 내 캐릭터가 맵에 나타나면. 점수·티켓까지는 안 기다린다 |
+
+만들면서 정한 것 (AI 판단, `src/ReplicatedFirst/LoadingScreen.client.lua`)
+- **`ReplicatedFirst` 에서 돈다.** 게임을 받는 동안 가장 먼저 와서 바로 실행되는 유일한 곳이다.
+  다른 곳에 만들면 **로딩이 끝난 다음에** 로딩 화면이 뜬다
+- **Config 를 안 쓴다.** 이 스크립트가 도는 순간에는 Config 가 아직 안 왔을 수 있고, 기다리면 화면이 빈다.
+  색은 Config.UI 와 같은 값을 따로 적었다. **게임 색을 바꾸면 여기도 같이 바꿀 것** (§5.5-3 을 알고 고른 예외)
+- **최소 2초, 최대 20초.** 번쩍 사라지지 않게, 그리고 무엇이 안 끝나도 갇히지 않게
+- **Skip 은 3초 뒤, 아래 가운데.** 처음엔 오른쪽 아래로 보여줬지만 그 자리는 모바일 점프 버튼이다.
+  로블록스 버튼은 우리 화면보다 위에 그려져서 Skip 대신 점프가 눌린다
+- **진행 막대는 단계마다 한 칸** (게임 받기 → 맵). 로블록스는 남은 양을 정확히 안 알려줘서,
+  시간에 맞춰 부드럽게 채우면 다 찼는데 안 끝나는 **거짓말하는 막대**가 된다
+- **연필 선은 필기체처럼 고리가 생기고, 한 줄마다 색이 바뀐다** (파랑 → 보라 → 주황, 게임 버튼 세 색)
+- **연필 이모지(✏️)는 90도 돌려 쓴다.** 로블록스 글꼴에서는 심이 오른쪽 아래를 향한다.
+  처음에 왼쪽 아래라고 짐작해서 심이 선보다 앞에 나가 있었다 (2026-10-28 개발자 테스트로 발견).
+  이모지는 글꼴마다 그림이 달라서 짐작하지 말고 눈으로 확인할 것
+- **사라질 때는 종이가 위로 걷힌다.** 격자 선 80개를 하나하나 흐리게 하는 것보다 간단하다
+- **스튜디오 미리보기 시간** (`STUDIO_PREVIEW_SECONDS`). 디자인을 볼 때만 8초쯤으로 올린다.
+  게시한 게임에는 `RunService:IsStudio()` 로 막혀서 **절대 적용되지 않는다.** 2026-10-28 디자인 확인이 끝나 0 으로 돌렸다
+- `ResetOnSpawn = false` 가 필수다. 켜져 있으면 캐릭터가 나타나는 순간(= 이 화면이 기다리는 신호) 로블록스가 화면을 지운다
+
 ### 등급 기준 — 잠정 (출시 후 데이터 보고 조정)
 
 ```lua
@@ -340,6 +500,7 @@ RATING_WINDOW           = 20    -- 평균 낼 판 수
 - [x] ~~캐시템 각각의 Robux 가격~~ → 엿보기 **10** / 주제 작성권 **30** / 다음 판 그리기 **15**
 - [x] ~~엿보기 지속 시간 / 내 타이머가 멈추는지 여부~~ → **라운드 끝까지**, 타이머는 **계속 간다**
 - [ ] 신고 기능 구현 방식
+- [ ] 피드백 버튼 — 출시 직전에 만든다 (2026-10-28 개발자 결정). 무엇을 받을지(글? 별점?)는 그때 정한다
 - [ ] 맵 디자인 (코드가 아닌 스튜디오에서 수작업 예정)
       의자는 **코드가 실행 중에 찾는다.** 좌표를 적어두지 않으므로
       의자를 옮기거나 새로 놓아도 코드는 안 고쳐도 된다. §5.4 참고
@@ -662,9 +823,9 @@ DataStore 호출은 **평범하게 실패한다.** 로블록스 서버가 잠깐
 | 4b | 리더보드(Wins/Score) + DataStore 저장 | ✅ 완료 |
 | 5a | 그릴 차례 게이지 + 안 그리기 | ✅ 완료 |
 | 5b | 캐시템 3종 + 상점 UI + 엿보기 화면 | ✅ 완료 (PC, 2026-10-28). 출시 직전 확인 2개는 아래 표 |
-| 5c | 로딩 화면 + 전반 디자인 + 썸네일/배경 | ⬜ |
-| 5d | 신고 기능 (§3.10, 공개 전 필수) | ⬜ |
-| 6 | 5분 서버 / 프로 서버 | ⬜ **맨 마지막** |
+| 5c | 로딩 화면 + 전반 디자인 + 썸네일/배경 | 🔧 **지금** — 로딩 화면 만듦 (JULIET2 확인: 화면·색 바뀜·Skip ✅ / 연필 방향 고침 KILO2, 재확인 필요). 디자인·썸네일은 그다음. 음악 같은 잡다한 것보다 먼저 (2026-10-28 개발자 결정) |
+| 5d | 신고 기능 (§3.10, 공개 전 필수) | ⬜ 출시 직전 |
+| 6 | 5분 서버 / 프로 서버 | ⬜ 출시 직전, 피드백 버튼·신고·필터 다음 (2026-10-28 개발자 결정) |
 
 **단계를 건너뛰지 말 것.** 각 단계는 스튜디오에서 동작 확인 후 다음으로 넘어간다.
 
@@ -689,14 +850,26 @@ DataStore 호출은 **평범하게 실패한다.** 로블록스 서버가 잠깐
 - 출시 후에 할 것: **1v1v1, 2v2 같은 다른 모드**, 다른 기기 테스트.
   모드는 아직 규칙을 안 정했다. §2 "미정 — 결정 전까지 구현 금지" 에 따라 정한 뒤에 만든다
 
+**작업 순서** (개발자 결정, 2026-10-28)
+
+1. **지금**: 로딩 화면 같은 화면 다듬기 (5c). 음악 추가 같은 잡다한 것은 그다음
+2. **출시 직전**: 피드백 버튼 → 그림 신고(5d) → 주제 필터 → 5분·프로 서버(6단계) → 출시
+
 **⚠️ 공개 전에 반드시 끝낼 것** (이 문서가 스스로 "공개 전 필수" 라고 적어둔 것들)
 
 | 항목 | 왜 필수인가 | 상태 |
 |---|---|---|
-| 주제 필터를 **게시한 게임에서** 확인 (§3.1) | 유저가 쓴 글자를 남에게 보여주므로 로블록스 정책 의무. 빠지면 게임이 내려갈 수 있다. 스튜디오에서는 필터가 안 돈다 | ⬜ |
-| 신고 기능 (§3.10, 5d) | 그림은 유저 생성 콘텐츠라 문제 있는 그림이 반드시 나온다 | ⬜ 방법 미정 |
+| 주제 필터를 **게시한 게임에서** 확인 (§3.1) | 유저가 쓴 글자를 남에게 보여주므로 로블록스 정책 의무. 빠지면 게임이 내려갈 수 있다. 스튜디오에서는 필터가 안 돈다 | ⬜ 출시 직전 |
+| 신고 기능 (§3.10, 5d) | 그림은 유저 생성 콘텐츠라 문제 있는 그림이 반드시 나온다 | ⬜ 출시 직전, 방법 미정 |
 | 재접속해도 "다음 판 그리기" 100% 유지 | 돈 낸 물건이 사라지면 안 된다 | ⬜ 출시 직전에 확인 |
-| 로딩 화면·디자인·썸네일 (5c) | 필수는 아니다. "맨 마지막에" 로 정해뒀다. 출시 전에 할지는 개발자가 정한다 | ⬜ |
+| **테스트용 값 되돌리기** — `Config.PLAY_SECONDS_PER_TOKEN` 이 `21 * 60` 인지 | 30초로 둔 채 게시하면 무료 작성권이 30초마다 나간다 | ✅ 21분으로 되돌림 (2026-10-29, 30초로 쌓이는지 확인 끝). 테스트할 때마다 다시 확인 |
+
+**출시 직전에 같이 하는 것** (필수는 아니지만 개발자가 출시 전에 하기로 함)
+
+| 항목 | 상태 |
+|---|---|
+| 피드백 버튼 | ⬜ 출시 직전. 무엇을 받을지(글? 별점?)는 그때 정한다 |
+| 5분 서버 / 프로 서버 (6단계) | ⬜ 출시 직전. ⚠️ 프로 서버 자격 점수 **N** 은 §2 에 "실제 판의 점수 분포를 보고 정한다" 로 되어 있다. 출시 전에는 그 데이터가 없으므로, **임시 N 으로 열지 / 프로 서버만 출시 후에 열지** 를 정해야 한다 |
 
 **5분 서버와 프로 서버를 맨 뒤로 뺀 이유** (결정됨)
 게임에 들어갈 것을 다 넣은 다음에 서버를 나눈다.
@@ -1288,6 +1461,8 @@ DrawBattle/
 ├── default.project.json      Rojo 설정
 ├── rokit.toml                Rojo 버전 고정 (rokit)
 ├── src/
+│   ├── ReplicatedFirst/      → ReplicatedFirst (게임보다 먼저 받아서 바로 실행)
+│   │   └── LoadingScreen.client.lua  로딩 화면 (Config 를 안 쓴다, §2 로딩 화면)
 │   ├── Shared/               → ReplicatedStorage.Shared
 │   │   ├── Config.lua            설정값 단일 출처
 │   │   ├── Remotes.lua           서버↔클라이언트 통로 (이름의 출처)
@@ -1302,10 +1477,11 @@ DrawBattle/
 │   │       ├── ActionBar.lua     되돌리기 / 다시하기 / 전체지우기
 │   │       ├── TopBar.lua        주제 / 제출 / 남은 시간
 │   │       ├── SpectateBar.lua   누구 그림을 볼지 + 별점 줄
-│       ├── StatsBar.lua      내 승리수 / 점수 (오른쪽 아래)
-│       ├── DrawChanceBar.lua 그릴 차례 게이지 + 안 그리기 (가운데 아래)
-│       ├── ShopPanel.lua    상점 (주제 쓰기 + 로벅스 구매 2종)
-│       ├── Toast.lua        짧게 떴다 사라지는 알림
+│   │       ├── StatsBar.lua      내 승리수 / 점수 (오른쪽 아래)
+│   │       ├── DrawChanceBar.lua 그릴 차례 게이지 + 안 그리기 (가운데 아래)
+│   │       ├── ShopPanel.lua     상점 (주제 쓰기 + 로벅스 구매 2종)
+│   │       ├── Toast.lua         짧게 떴다 사라지는 알림 (게임의 유일한 알림 장치)
+│   │       ├── TipLine.lua       기다리는 동안 상단 바 아래에 흐리게 도는 팁
 │   │       ├── ResultsPanel.lua  직전 라운드 결과
 │   │       ├── Layout.lua       화면 크기 → 배치값 계산 (순수 함수)
 │   │       ├── ConfirmDialog.lua 되돌리기 어려운 일 전에 묻는 경고창

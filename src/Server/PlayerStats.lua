@@ -51,8 +51,9 @@ type Stored = {
 	--    두 서버가 겹쳤을 때 셈이 어긋난다. (§3.11-2)
 	--
 	-- ⚠️ 주제 작성권은 **무료와 유료를 따로 센다.**
-	--    무료는 한 장까지만, 유료는 산 만큼 쌓인다. 규칙이 다르므로 지갑도 둘이다.
-	--    한 통으로 세면 유료로 한 장 산 사람이 그동안 무료를 못 받게 된다.
+	--    지금은 둘 다 쌓이지만(2026-10-28 부터), 무료에는 상한(Config.MAX_FREE_TOKENS)을 걸 수 있다.
+	--    규칙이 다를 수 있으므로 지갑도 둘이다.
+	--    한 통으로 세면 상한을 걸었을 때 유료로 한 장 산 사람이 그동안 무료를 못 받게 된다.
 	--
 	--      무료 남은 수 = tokensEarned - tokensSpent
 	--      유료 남은 수 = tokensBought - paidSpent
@@ -69,8 +70,8 @@ type Stored = {
 	--
 	--    쓸 때는 **무료부터** 쓴다. 무료는 써야 다시 차기 때문이다.
 	--
-	-- playSeconds 는 접속해 있던 시간(초)인데, **한 장 가지고 있는 동안에는
-	-- 안 오른다.** 그래야 쓰기 전에 다음 것이 안 쌓인다.
+	-- playSeconds 는 접속해 있던 총 시간(초)이다. 늘 오른다. 다음 작성권 시계의 기준이 된다.
+	-- (2026-10-28 전에는 무료 한 장을 들고 있는 동안 멈췄다. AddPlayTime 참고)
 	playSeconds: number,
 	tokensSpent: number, -- 무료를 쓴 수
 	paidSpent: number, -- 유료를 쓴 수
@@ -222,7 +223,7 @@ end
 --    **리더보드와 티켓 속성이 통째로 안 붙는다.** (README §5.5-13)
 
 -- 남은 주제 작성권 개수. 저장된 두 값에서 계산해서 낸다.
--- 무료로 받아 아직 안 쓴 수. **여기에만 한 장 제한이 걸린다.**
+-- 무료로 받아 아직 안 쓴 수. 상한(Config.MAX_FREE_TOKENS)은 여기에만 걸린다. 지금은 상한이 없다.
 local function freeTokensOf(session: Session): number
 	return math.max(0, session.tokensEarned - session.tokensSpent)
 end
@@ -247,12 +248,16 @@ local function peekOf(session: Session): number
 	return math.max(0, session.peekBought - session.peekUsed)
 end
 
--- 개수를 클라이언트에 알린다.
+-- 작성권·예약·엿보기 개수를 클라이언트에 알린다.
 --
 -- 특성(Attribute)을 쓰는 이유: 로블록스가 알아서 모든 클라이언트로 복제해준다.
 -- 통로(RemoteEvent)를 새로 파고 들어올 때마다 보내주는 것보다 훨씬 싸다.
 -- leaderstats 에 넣지 않는 이유: 그건 공개 순위표라 남들에게도 보인다.
-local function pushTokens(player: Player, session: Session)
+--
+-- (예전 이름은 pushTokens 였다. 개수가 셋으로 늘어서 하는 일에 맞게 바꿨다)
+-- 화면 ⏱️ 칸은 여기서 안 보낸다. 그건 저장된 총 시간이 아니라 "이번 접속 시간" 이라
+-- 화면이 스스로 센다. (DrawBattleUI._buildStats)
+local function pushAttributes(player: Player, session: Session)
 	player:SetAttribute("PromptTokens", tokensOf(session))
 	player:SetAttribute("DrawNextBooked", drawNextOf(session) > 0)
 	-- RoundService 가 이 특성이 바뀌는 것을 보고 있다가,
@@ -503,7 +508,7 @@ local function save(player: Player)
 		session.drawNextUsed = merged.drawNextUsed
 		session.peekBought = merged.peekBought
 		session.peekUsed = merged.peekUsed
-		pushTokens(player, session)
+		pushAttributes(player, session)
 		if session.winsValue then
 			session.winsValue.Value = session.wins
 		end
@@ -617,9 +622,15 @@ end
 --
 -- **대기 중인 시간도 센다.** 접속해 있으면 그냥 올라간다. (§2)
 --
--- ⚠️ 이미 한 장 가지고 있으면 **시간이 아예 안 쌓인다.**
---    쌓아뒀다가 쓰는 순간 또 나오면 결국 쌓아둔 것과 같기 때문이다.
---    쓰고 나면 그 자리에서 다시 세기 시작한다.
+-- **무료 작성권은 쌓인다.** (확정 2026-10-28 개발자 결정)
+--   21분마다 한 장. 안 쓰고 있어도 다음 21분을 또 세서 또 준다.
+--   예전에는 한 장 가지고 있으면 시간이 아예 안 쌓였다(한 장 제한).
+--
+-- ⚠️ playSeconds 는 이제 **진짜 총 플레이 시간**이다. (화면 ⏱️ 칸은 이걸 안 쓴다. 그건 이번 접속 시간이다)
+--    예전에는 한 장 들고 있는 동안 이 값도 같이 멈췄다. 그 규칙의 목적은 "다음 장을 안 센다" 였는데,
+--    시계를 멈추는 방법으로 했더니 **총 시간까지 같이 멈췄다.** 두 가지 일을 한 숫자에 맡긴 탓이다.
+--    이제 총 시간은 늘 세고, "다음 장" 시계(playSeconds - tokenClockBase)만 따로 붙잡는다.
+--    그래서 예전부터 하던 사람의 총 시간은 한 장 들고 있던 동안만큼 실제보다 적다. (출시 전이라 테스트 계정뿐)
 function PlayerStats.AddPlayTime(player: Player, seconds: number)
 	local session = sessions[player.UserId]
 	if not session or seconds <= 0 then
@@ -636,15 +647,25 @@ function PlayerStats.AddPlayTime(player: Player, seconds: number)
 		return
 	end
 
+	session.playSeconds += seconds
+	session.pendingSeconds += seconds
+
+	-- 무료 작성권이 상한에 닿았으면 **다음 장 시계만** 0 에 붙잡아 둔다. 총 시간은 위에서 이미 셌다.
+	-- 지금은 상한이 없어서(Config.MAX_FREE_TOKENS = math.huge) 여기에 들어올 일이 없다.
+	-- 다시 상한을 두고 싶으면 그 숫자만 바꾸면 된다.
+	--
 	-- ⚠️ **무료 지갑만** 본다. 총 개수를 보면 안 된다.
 	--    로벅스로 한 장 산 사람이 그것을 들고 있는 동안
 	--    무료 적립이 통째로 멈춰버린다. 돈 낸 사람이 손해를 보는 셈이다.
+	--
+	--    시계를 붙잡는 방법: 기준선(tokenClockBase)을 지금 시각으로 끌어온다.
+	--    기준선은 늘기만 하는 값이라 delta 저장과도 맞는다. (§3.11-2)
 	if freeTokensOf(session) >= Config.MAX_FREE_TOKENS then
-		return -- 무료로 받은 것을 써야 다음 것을 센다
+		local held = session.playSeconds - session.tokenClockBase
+		session.tokenClockBase += held
+		session.pendingClockBase += held
+		return
 	end
-
-	session.playSeconds += seconds
-	session.pendingSeconds += seconds
 
 	-- 이번 판을 시작한 시점(tokenClockBase)에서 기준시간만큼 지났는가.
 	--
@@ -657,7 +678,7 @@ function PlayerStats.AddPlayTime(player: Player, seconds: number)
 
 		session.tokensEarned += 1
 		session.pendingEarned += 1
-		pushTokens(player, session)
+		pushAttributes(player, session)
 		log(string.format(
 			"TOKEN %s: 주제 작성권을 받았다 -> %d개 (누적 %d분)",
 			player.Name, tokensOf(session), math.floor(session.playSeconds / 60)
@@ -665,7 +686,7 @@ function PlayerStats.AddPlayTime(player: Player, seconds: number)
 	end
 end
 
--- 로벅스로 산 주제 작성권을 넣어준다. 20분 놀아서 받는 것과 같은 물건이다.
+-- 로벅스로 산 주제 작성권을 넣어준다. 21분 놀아서 받는 것과 같은 물건이다.
 --
 -- 같은 것으로 둔 이유: 쓰는 길이 하나면 된다.
 -- "무료권으로 쓴 주제" 와 "산 주제" 를 갈라두면 두 배로 만들고 두 배로 틀린다.
@@ -676,7 +697,7 @@ function PlayerStats.GrantToken(player: Player, count: number)
 	end
 	session.tokensBought += count
 	session.pendingBought += count
-	pushTokens(player, session)
+	pushAttributes(player, session)
 	log(string.format("GRANT %s: 주제 작성권 +%d -> %d개", player.Name, count, tokensOf(session)))
 end
 
@@ -688,7 +709,7 @@ function PlayerStats.GrantDrawNext(player: Player)
 	end
 	session.drawNextBought += 1
 	session.pendingDrawBought += 1
-	pushTokens(player, session)
+	pushAttributes(player, session)
 	log(string.format("GRANT %s: 다음 판 그리기 예약 -> %d", player.Name, drawNextOf(session)))
 end
 
@@ -705,7 +726,7 @@ function PlayerStats.GrantPeek(player: Player)
 	end
 	session.peekBought += 1
 	session.pendingPeekBought += 1
-	pushTokens(player, session)
+	pushAttributes(player, session)
 	log(string.format("GRANT %s: 엿보기 -> %d개", player.Name, peekOf(session)))
 end
 
@@ -722,7 +743,7 @@ function PlayerStats.UsePeek(player: Player): boolean
 	end
 	session.peekUsed += 1
 	session.pendingPeekUsed += 1
-	pushTokens(player, session)
+	pushAttributes(player, session)
 	return true
 end
 
@@ -743,7 +764,7 @@ function PlayerStats.UseDrawNext(player: Player): boolean
 	end
 	session.drawNextUsed += 1
 	session.pendingDrawUsed += 1
-	pushTokens(player, session)
+	pushAttributes(player, session)
 	return true
 end
 
@@ -778,7 +799,7 @@ function PlayerStats.SpendToken(player: Player): boolean
 		return false
 	end
 
-	pushTokens(player, session)
+	pushAttributes(player, session)
 	log(string.format(
 		"SPEND %s: %s 주제 작성권 -> 무료 %d / 유료 %d",
 		player.Name, kind, freeTokensOf(session), paidTokensOf(session)
@@ -813,7 +834,7 @@ function PlayerStats.Start()
 		-- 불러오는 사이에 나갔을 수 있다. 그러면 붙일 곳이 없다.
 		if player.Parent then
 			buildLeaderstats(player, session)
-			pushTokens(player, session)
+			pushAttributes(player, session)
 		end
 	end
 

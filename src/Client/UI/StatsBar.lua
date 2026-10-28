@@ -7,8 +7,10 @@
 	보여주는 것
 	  🏆 이긴 판 수      leaderstats.Wins
 	  ⭐ 누적 점수        leaderstats.Score
-	  🎟️ 주제 작성권      20분 놀 때마다 하나씩. **하나도 없으면 이 칸은 안 보인다.**
+	  🎟️ 주제 작성권      21분 놀 때마다 하나씩, 쌓인다. **하나도 없으면 이 칸은 안 보인다.**
 	                     늘 0 으로 떠 있으면 무슨 뜻인지 모르는 칸이 하나 늘 뿐이다.
+	  ⏱️ 이번 접속 시간   이 서버에 들어온 뒤 지난 시간. "45m", "3h 12m" 처럼 분 단위. (2026-10-28 개발자 결정)
+	                     총 플레이 시간이 아니다. 다시 들어오면 0 부터 센다. 계산은 DrawBattleUI 가 한다.
 
 	왜 만드는가
 	  앞의 두 값은 로블록스 기본 리더보드(leaderstats)에 이미 있다.
@@ -100,8 +102,10 @@ function StatsBar.new(parent: Instance)
 	-- 주제 작성권은 **가지고 있을 때만** 보인다.
 	-- 늘 0 으로 떠 있으면 무슨 뜻인지 모르는 칸이 하나 늘 뿐이다.
 	self.tokenLabel, self.tokenGroup = self:_buildEntry(bar, "Tokens", "🎟️", 3)
+	-- 플레이 시간은 맨 끝에 둔다. 네 칸 중 가장 길어서(3h 12m) 가운데 끼면 줄이 들쭉날쭉해 보인다.
+	self.playLabel = self:_buildEntry(bar, "Playtime", "⏱️", 4)
 
-	self:Update(0, 0, 0)
+	self:Update(0, 0, 0, 0)
 
 	return self
 end
@@ -152,12 +156,25 @@ function StatsBar:_buildEntry(
 	return value, group
 end
 
+-- 초를 "45m" / "3h 12m" 로 바꾼다.
+-- 초는 안 보여준다. 1초마다 바뀌는 숫자가 구석에서 계속 움직이면 자꾸 눈이 간다.
+local function formatPlaytime(seconds: number): string
+	local totalMinutes = math.floor(seconds / 60)
+	local hours = totalMinutes // 60
+	local minutes = totalMinutes % 60
+	if hours <= 0 then
+		return string.format("%dm", minutes)
+	end
+	return string.format("%dh %dm", hours, minutes)
+end
+
 -- 보여줄 값을 받아 그대로 찍는다. 판단은 하지 않는다.
-function StatsBar:Update(wins: number, score: number, tokens: number)
+function StatsBar:Update(wins: number, score: number, tokens: number, sessionSeconds: number)
 	self.winsLabel.Text = tostring(wins)
 	self.scoreLabel.Text = tostring(score)
 	self.tokenLabel.Text = tostring(tokens)
 	self.tokenGroup.Visible = tokens > 0
+	self.playLabel.Text = formatPlaytime(sessionSeconds)
 end
 
 return StatsBar

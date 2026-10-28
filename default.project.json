@@ -2,6 +2,10 @@
   "name": "DrawBattle",
   "tree": {
     "$className": "DataModel",
+    "ReplicatedFirst": {
+      "$className": "ReplicatedFirst",
+      "$path": "src/ReplicatedFirst"
+    },
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
       "Shared": {
@@ -19,7 +23,8 @@
         "$path": "src/Client"
       },
       "$properties": {
-        "EnableMouseLockOption": false
+        "EnableMouseLockOption": false,
+        "CameraMinZoomDistance": 8
       }
     },
     "Workspace": {
